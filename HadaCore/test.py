@@ -1,5 +1,5 @@
 import torch
-import faster_hadamard_transform
+import hada_core
 import scipy.linalg
 import math
 
@@ -40,7 +40,7 @@ def truth_hadamard_transform_inplace(a: torch.Tensor, truth_hadamards):
     return a @ truth_hadamards[int(target_index)]
 
 def test_hadamard_transform_inplace_rowmajor(a: torch.Tensor):
-    faster_hadamard_transform.hadamard_transform(a, inplace=True)
+    hada_core.hadamard_transform(a, inplace=True)
     return a
 
 torch.manual_seed(0)

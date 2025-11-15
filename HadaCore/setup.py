@@ -11,10 +11,10 @@ versions = [
 ] # TODO: assumes installed CUDA toolkit supports sm_80 to sm_90
 
 setup(
-    name='faster_hadamard_transform',
+    name='hada_core',
     ext_modules=[
         CUDAExtension(
-            name="faster_hadamard_transform",
+            name="hada_core",
             sources=[
                 "hadamard_transform.cpp",
                 "hadamard_transform_cuda.cu",
