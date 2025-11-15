@@ -1,0 +1,11 @@
+# environment.yml
+# Per-project env lives inside the repo
+prefix: ./.conda
+
+# channels:
+#   - pytorch
+#   - nvidia
+#   - conda-forge
+
+dependencies:
+  - bear

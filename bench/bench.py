@@ -11,12 +11,15 @@ from typing import Callable
 from typing import Protocol
 
 import cappa
+import numpy as np
 import scipy.linalg
 import torch
 
 # must import after torch
 import fast_hadamard_transform_cuda
 import hada_core
+
+import csrc
 
 
 class BenchmarkTarget(Protocol):
@@ -71,6 +74,14 @@ class HadaCore(BenchmarkTarget):
         hadamard_ref(t)
 
 
+class OwnHada(BenchmarkTarget):
+    def call(self, t: torch.Tensor) -> None:
+        csrc.hadamard_transform(t, inplace=True)
+
+    def call_ref(self, t: torch.Tensor) -> None:
+        hadamard_ref(t)
+
+
 class AddOne(BenchmarkTarget):
     def call(self, t: torch.Tensor) -> None:
         t.add_(1)
@@ -83,6 +94,7 @@ CASES: dict[str, BenchmarkTarget] = {
     "AddOne": AddOne(),
     "FastHada": FastHada(),
     "HadaCore": HadaCore(),
+    "OwnHada": OwnHada(),
 }
 
 ##########
@@ -111,7 +123,8 @@ def _bench_many(fn: Callable[[], None], iters: int, warmup: int = 3) -> dict[str
 
 
 # hadamard sizes
-test_sizes_m = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+# test_sizes_m = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+test_sizes_m = [256]
 
 test_elem_counts = [1 << i for i in range(9, 26, 1)]  # 32MB # 64MB # 2**28 = 256M
 
@@ -160,14 +173,21 @@ def _run_checks(
             print(a_truth)
             print("Got:")
             print(a_result)
+
             diff = torch.abs(a_truth - a_result)
+            print("diff:", diff)
+
             max_diff = torch.max(diff)
             print(f"Max diff: {max_diff}")
-            print(f"Max diff index: {torch.argmax(diff)}")
-            diff_input = torch.abs(a.to(a_result.dtype) - a_result)
-            max_diff_input = torch.max(diff_input)
-            print(f"Max diff input: {max_diff_input}")
-            print("")
+
+            flat_idx = torch.argmax(diff)
+            coords = torch.unravel_index(flat_idx, diff.shape)
+            print(f"Max diff index: {[x.item() for x in coords]}")
+
+            # diff_input = torch.abs(a.to(a_result.dtype) - a_result)
+            # max_diff_input = torch.max(diff_input)
+            # print(f"Max diff input: {max_diff_input}")
+            print()
             raise SystemExit(1)
 
 

@@ -1,0 +1,22 @@
+InlayHints:
+  Designators: Yes
+  Enabled: Yes
+  DeducedTypes: Yes
+
+Hover:
+  ShowAKA: Yes
+
+CompileFlags:
+  Add:
+    - "--cuda-gpu-arch=sm_89"
+    - "-std=gnu++20"
+    - "-Wno-class-conversion"
+    - "-DCLANGD=1"
+  Remove:
+    - "--ptxas*"
+    - "--generate-dependencies-with-compile"
+    - "--dependency-output"
+    - "--expt-relaxed-constexpr"
+    - "--compiler-options"
+    - "-gencode"
+    - "-ccbin"

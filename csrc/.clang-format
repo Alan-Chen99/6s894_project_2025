@@ -1,0 +1,22 @@
+---
+AlignConsecutiveMacros: 'false'
+AlignConsecutiveAssignments: 'false'
+AlignConsecutiveDeclarations: 'false'
+AlignEscapedNewlines: DontAlign
+AlignOperands: 'false'
+AllowAllArgumentsOnNextLine: 'false'
+AllowAllConstructorInitializersOnNextLine: 'false'
+AllowAllParametersOfDeclarationOnNextLine: 'false'
+BinPackArguments: 'false'
+BinPackParameters: 'false'
+IndentWidth: 4
+ColumnLimit: 90
+
+AlignAfterOpenBracket: 'BlockIndent'
+BreakBeforeTemplateCloser: 'true'
+PointerAlignment: Left
+PenaltyReturnTypeOnItsOwnLine: 1000
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
