@@ -9,7 +9,7 @@ Hover:
 CompileFlags:
   Add:
     - "--cuda-gpu-arch=sm_89"
-    - "-std=c++17"
+    - "-std=c++20"
     - "-Wno-class-conversion"
     - "-DCLANGD=1"
   Remove:

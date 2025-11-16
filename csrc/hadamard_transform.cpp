@@ -1,12 +1,10 @@
+#include "defs.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <pybind11/pybind11.h>
 #include <torch/extension.h>
 
 using namespace torch::indexing;
-
-template <torch::ScalarType dtype>
-void run_fht(void* a, void* out, uint32_t numel, uint32_t had_size, cudaStream_t stream);
 
 constexpr bool is_power_of_two(uint32_t x) { return x && !(x & (x - 1)); }
 
@@ -86,4 +84,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         py::arg("x"),
         py::arg("inplace") = false
     );
+
+    m.def("test_rotate4", &test_rotate4, "test_rotate4");
 }

@@ -19,18 +19,22 @@ setup(
             sources=[
                 "hadamard_transform.cpp",
                 "hadamard_transform_cuda.cu",
+                "main.cu",
             ],
             extra_compile_args={
                 "cxx": [
                     "-O3",
-                    "-std=c++17",
+                    "-std=c++20",
                 ],
                 "nvcc": [
                     "-O3",
-                    "-std=c++17",
+                    "-std=c++20",
                     "-lineinfo",
                     "--ptxas-options=--warn-on-local-memory-usage",
                     "--ptxas-options=--warn-on-spills",
+                    # c++20 on torch:
+                    # warning #3189-D: "module" is parsed as an identifier rather than a keyword
+                    "-diag-suppress=3189",
                 ]
                 + versions,
             },
