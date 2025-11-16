@@ -21,9 +21,13 @@ setup(
                 "hadamard_transform_cuda.cu",
             ],
             extra_compile_args={
-                "cxx": ["-O3"],
+                "cxx": [
+                    "-O3",
+                    "-std=c++17",
+                ],
                 "nvcc": [
                     "-O3",
+                    "-std=c++17",
                     "-lineinfo",
                     "--ptxas-options=--warn-on-local-memory-usage",
                     "--ptxas-options=--warn-on-spills",

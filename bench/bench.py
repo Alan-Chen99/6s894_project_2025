@@ -15,11 +15,11 @@ import numpy as np
 import scipy.linalg
 import torch
 
-# must import after torch
-import fast_hadamard_transform_cuda
-import hada_core
+# from rich import print
 
 import csrc
+import fast_hadamard_transform_cuda
+import hada_core
 
 
 class BenchmarkTarget(Protocol):
@@ -79,7 +79,8 @@ class OwnHada(BenchmarkTarget):
         csrc.hadamard_transform(t, inplace=True)
 
     def call_ref(self, t: torch.Tensor) -> None:
-        hadamard_ref(t)
+        HadaCore().call(t)
+        # hadamard_ref(t)
 
 
 class AddOne(BenchmarkTarget):
@@ -176,6 +177,7 @@ def _run_checks(
 
             diff = torch.abs(a_truth - a_result)
             print("diff:", diff)
+            # print("diff:", diff.tolist())
 
             max_diff = torch.max(diff)
             print(f"Max diff: {max_diff}")
@@ -263,9 +265,10 @@ def main(cfg: TestConfig) -> None:
 
                 for case_name in case_names:
                     target = CASES[case_name]
-                    if cfg.check:
-                        _run_checks(a, m, n, cfg, target, atol_map)
-                    else:
+
+                    _run_checks(a, m, n, cfg, target, atol_map)
+
+                    if not cfg.check:
                         results.extend(_run_perf(a, m, n, cfg, target, device_name, case_name))
 
             # one increment per size pair (fixed counter)

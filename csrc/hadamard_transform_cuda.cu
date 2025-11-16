@@ -1,298 +1,473 @@
+/**
+ * Fast 256-point Walsh–Hadamard transform (FHT-256) on Tensor Cores (CUDA).
+ *
+ * Overview
+ * - Dtypes: Half (fp16) and BFloat16 (bf16).
+ * - API: PyTorch CUDA extension; call run_fht<dtype>(...) from C++ binding code.
+ * - Work partitioning: one warp (32 threads) computes one 256-element row.
+ * - Layout: rows of 256 b16 elements (fp16/bf16), contiguous and 4-byte aligned.
+ * - Algorithm: two fused 4-stage tensor-core MMA passes with one mid-pass register swap.
+ * - Numerics: A-fragment encodes ±0.25 in target dtype to implement Hadamard signs.
+ * - Arch:
+ *     * fp16 MMA path: SM75+ (Turing and newer).
+ *     * bf16 MMA path: SM80+ (Ampere and newer).
+ *
+ * Boolean magic (Hadamard A-fragment)
+ * - Lanes are split into 4 groups of 8 (g = lane >> 3), and sub-lane s in [0..7].
+ * - s0, s1, s2 are the bitfields of s. Define F = (g&1 ? s0 : 0) XOR (g&2 ? s1 : 0).
+ *   Intuition: F wires which sub-lane bits (s0, s1) feed the sign based on the
+ * lane-group.
+ * - P1_base = NXOR(F, 0)  -> reproduces 0xFFAACC99 (MSB-first bit order).
+ * - P2_base = NXOR(F, s2) -> reproduces 0xF0A5C396 (MSB-first bit order).
+ * - Register 3 uses bitwise complement of the base masks (flip all signs).
+ *
+ * Implementation notes
+ * - A-fragment stores ±0.25 in b16x2 registers so one MMA implements four Hadamard stages
+ *   at once (like a 4-level butterfly). We run two such passes with a register swap
+ * (1<->2) interleaved to complete the full 256-point transform.
+ * - B-fragment swizzles ensure the warp loads/stores are coalesced while matching tensor
+ *   core operand layouts. Odd registers exchange half-warps via __shfl_xor with mask=16.
+ * - Lane masks use "MSB-first indexing": lane 0 reads bit 31, lane 31 reads bit 0.
+ *   This matches the original constant encoding and keeps the logic data-independent.
+ */
+
 #include <c10/cuda/CUDAException.h>
 #include <cuda_runtime.h>
 #include <mma.h>
-#include <stdint.h>
 #include <torch/extension.h>
+
+#include <array>
+#include <cstdint>
 
 #ifndef __CUDACC__
 #define __launch_bounds__(x, y)
 #endif
 
-typedef uint32_t b32;
-typedef uint16_t b16;
+using u32 = uint32_t;
+using u16 = uint16_t;
 
-// ----- MMA helpers (kept from before) -----
+// ----------------------------- Tiny utilities -----------------------------
 
-template <torch::ScalarType dtype>
-__device__ __forceinline__ void mma_m16_n8_k16_b16_b16_b16_noacc(
-    b32 a0,
-    b32 a1,
-    b32 a2,
-    b32 a3,
-    b32 b0,
-    b32 b1,
-    b32& c0,
-    b32& c1
-)
+template <class T> __device__ __forceinline__ auto swap_(T& a, T& b) -> void
 {
-    static_assert(
-        dtype == torch::ScalarType::Half || dtype == torch::ScalarType::BFloat16
-    );
-    b32 zero = 0;
-    if constexpr (dtype == torch::ScalarType::Half) {
-        asm("mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
-            "{%0, %1}, {%2, %3, %4, %5}, {%6, %7}, {%8, %9};\n\t"
-            : "=r"(c0), "=r"(c1)
-            : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1), "r"(zero), "r"(zero));
-    } else {
-        b32 temp0, temp1, temp2, temp3;
-        asm("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
-            "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};\n\t"
-            : "=r"(temp0), "=r"(temp1), "=r"(temp2), "=r"(temp3)
-            : "r"(a0),
-              "r"(a1),
-              "r"(a2),
-              "r"(a3),
-              "r"(b0),
-              "r"(b1),
-              "r"(zero),
-              "r"(zero),
-              "r"(zero),
-              "r"(zero));
-        asm("cvt.rn.bf16x2.f32 %0, %1, %2;\n\t" : "=r"(c0) : "r"(temp1), "r"(temp0));
-        asm("cvt.rn.bf16x2.f32 %0, %1, %2;\n\t" : "=r"(c1) : "r"(temp3), "r"(temp2));
+    T c = a;
+    a = b;
+    b = c;
+}
+
+/**
+ * Pack two 16-bit values into one 32-bit word (b16x2).
+ * lo -> bits [15:0], hi -> bits [31:16].
+ */
+__device__ __forceinline__ auto pack_b16x2(u16 lo, u16 hi) -> u32
+{
+    return static_cast<u32>(lo) | (static_cast<u32>(hi) << 16);
+}
+
+/**
+ * MSB-first bit test for a warp lane:
+ * lane 0 queries bit 31; lane 31 queries bit 0.
+ */
+__device__ __forceinline__ auto msb_bit_for_lane(u32 mask, int lane) -> bool
+{
+    return (mask >> (31 - lane)) & 1u;
+}
+
+/**
+ * Bit encoding of +0.25 and -0.25 in target dtype (fp16/bf16).
+ * - For bf16 we encode in the upper 16 bits of a float, following the bf16 layout.
+ * - The -0.25 encoding is obtained by flipping the sign bit.
+ */
+template <torch::ScalarType dtype>
+__device__ __forceinline__ auto quarter_pos_bits() -> u16
+{
+    if constexpr (dtype == torch::ScalarType::Half)
+        return static_cast<u16>(0x3400); // +0.25 (fp16)
+    else
+        return static_cast<u16>(0x3E80); // +0.25 (bf16)
+}
+template <torch::ScalarType dtype>
+__device__ __forceinline__ auto quarter_neg_bits() -> u16
+{
+    return static_cast<u16>(quarter_pos_bits<dtype>() | 0x8000u);
+}
+
+// ---------------------- Hadamard A-fragment mask logic ---------------------
+
+/**
+ * Compile-time generator for the 32-bit lane-sign mask used by the A fragment.
+ * See the "Boolean magic" overview above for the definition.
+ */
+constexpr auto nxor_bool(bool a, bool b) -> bool { return a == b; }
+
+constexpr auto had_mask_base(bool include_s2) -> u32
+{
+    u32 m = 0;
+    for (int lane = 0; lane < 32; ++lane) {
+        const int g = lane >> 3; // 4 groups of 8 lanes
+        const int s = lane & 7;  // sub-lane in the group
+        const bool s0 = static_cast<bool>(s & 1);
+        const bool s1 = static_cast<bool>((s >> 1) & 1);
+        const bool s2 = static_cast<bool>((s >> 2) & 1);
+
+        // F selects which sub-lane bits contribute based on lane-group
+        const bool F = ((g & 1) ? s0 : false) ^ ((g & 2) ? s1 : false);
+
+        // Base bit via NXOR with an optional s2 term
+        const bool bit = include_s2 ? nxor_bool(s2, F) : nxor_bool(false, F);
+
+        // MSB-first: lane 0 -> bit 31, lane 31 -> bit 0
+        if (bit)
+            m |= 1u << (31 - lane);
     }
+    return m;
 }
 
+// Base (uncomplemented) masks: match original constants but computed constexpr.
+static constexpr u32 P1_BASE = had_mask_base(false); // 0xFFAACC99
+static constexpr u32 P2_BASE = had_mask_base(true);  // 0xF0A5C396
+
+// ------------------------------ MMA wrappers ------------------------------
+
+/**
+ * One Tensor Core MMA for a 16x8x16 multiply with b16 inputs and b16 output regs.
+ * D = A x B (+ 0). No accumulation (fresh accumulator = 0).
+ *
+ * - fp16 path uses f16 accumulators and returns f16 packed as b16x2 regs (u32).
+ * - bf16 path accumulates in f32 then packs back to bf16x2 with round-to-nearest.
+ *
+ * Args
+ * - a: 4 regs (b16x2) holding the 16x16 A tile for the fused 4-stage Hadamard signs.
+ * - b: 2 regs (b16x2) holding the 16x8 B tile.
+ *
+ * Returns
+ * - 2 regs (b16x2) with the resulting 16x8 D tile.
+ */
 template <torch::ScalarType dtype>
-__device__ __forceinline__ void mma_m16_n16_k16_b16_b16_b16_noacc(
-    b32 a0,
-    b32 a1,
-    b32 a2,
-    b32 a3,
-    b32 b0,
-    b32 b1,
-    b32 b2,
-    b32 b3,
-    b32& c0,
-    b32& c1,
-    b32& c2,
-    b32& c3
-)
+__device__ __forceinline__ auto mma_m16_n8_k16_b16_b16_b16_noacc(
+    const std::array<u32, 4>& a,
+    const std::array<u32, 2>& b
+) -> std::array<u32, 2>
 {
-    mma_m16_n8_k16_b16_b16_b16_noacc<dtype>(a0, a1, a2, a3, b0, b1, c0, c1);
-    mma_m16_n8_k16_b16_b16_b16_noacc<dtype>(a0, a1, a2, a3, b2, b3, c2, c3);
-}
-
-// Not used for size-256 path but kept so code stays close
-__device__ __forceinline__ void matrix_transpose_m8_n8_b16_inplace(b32& a0)
-{
-    asm("movmatrix.sync.aligned.m8n8.trans.b16 %0, %1;\n\t" : "=r"(a0) : "r"(a0));
-}
-
-// ----- Hadamard constants (kept from before) -----
-
-#define p_p(i) ((val_1p[i] & 0x0000FFFF) | (b32)val_1p[i] << 16)
-#define p_n(i) ((val_1p[i] & 0x0000FFFF) | (b32)val_1n[i] << 16)
-#define n_p(i) ((val_1n[i] & 0x0000FFFF) | (b32)val_1p[i] << 16)
-#define n_n(i) ((val_1n[i] & 0x0000FFFF) | (b32)val_1n[i] << 16)
-
-template <int log_had_size, torch::ScalarType dtype>
-__global__ __launch_bounds__(32, 1) void hadamard_transform_256_kernel(
-    const b16* __restrict__ a,
-    b16* __restrict__ out,
-    int num_rows
-)
-{
-    static_assert(log_had_size == 8, "This demo kernel only handles size 256.");
     static_assert(
         dtype == torch::ScalarType::Half || dtype == torch::ScalarType::BFloat16,
         "Only fp16 and bf16 supported."
     );
 
-    int row = blockIdx.x;
-    if (row >= num_rows)
-        return;
-    int lane = threadIdx.x & 31;
+    constexpr u32 zero = 0;
+    u32 c0, c1;
 
-    extern __shared__ b32 smem[]; // 128 x 4B = 512B
-
-    // Base pointers for this row
-    const b32* __restrict__ in32 = (const b32*)(a + row * 256);
-    b32* __restrict__ out32 = (b32*)(out + row * 256);
-
-// Cooperative load: 256 b16 -> 128 b32
-#pragma unroll
-    for (int j = 0; j < 4; j++) {
-        smem[lane * 4 + j] = in32[lane * 4 + j];
-    }
-    __syncthreads();
-
-    // Build 16x16 ±1 fragment for 4 stages (we will reuse it twice)
-    constexpr b16 fp16_1p[4] =
-        {0b0011100110101000, 0b0011100000000000, 0b0011010110101000, 0b0011010000000000};
-    constexpr b16 fp16_1n[4] =
-        {0b1011100110101000, 0b1011100000000000, 0b1011010110101000, 0b1011010000000000};
-    constexpr b16 bf16_1p[4] =
-        {0b0011111100110101, 0b0011111100000000, 0b0011111010110101, 0b0011111010000000};
-    constexpr b16 bf16_1n[4] =
-        {0b1011111100110101, 0b1011111100000000, 0b1011111010110101, 0b1011111010000000};
-
-#define val_type_1p(i) \
-    (((dtype) == torch::ScalarType::Half) ? (fp16_1p[i]) : (bf16_1p[i]))
-#define val_type_1n(i) \
-    (((dtype) == torch::ScalarType::Half) ? (fp16_1n[i]) : (bf16_1n[i]))
-    constexpr b16 val_1p[4] =
-        {val_type_1p(0), val_type_1p(1), val_type_1p(2), val_type_1p(3)};
-    constexpr b16 val_1n[4] =
-        {val_type_1n(0), val_type_1n(1), val_type_1n(2), val_type_1n(3)};
-
-    constexpr b32 p_p[4] = {p_p(0), p_p(1), p_p(2), p_p(3)};
-    constexpr b32 p_n[4] = {p_n(0), p_n(1), p_n(2), p_n(3)};
-    constexpr b32 n_p[4] = {n_p(0), n_p(1), n_p(2), n_p(3)};
-    constexpr b32 n_n[4] = {n_n(0), n_n(1), n_n(2), n_n(3)};
-
-    const b32 had_16_p1[4][4] = {
-        {0b10001000010001000010001000010001, 0, 0, 0b10001000010001000010001000010001},
-        {0b11001100100010000011001100100010, 0, 0, 0b11001100100010000011001100100010},
-        {0b11111111101010101100110010011001, 0, 0, 0b11111111101010101100110010011001},
-        {0b11111111101010101100110010011001,
-         0b11111111101010101100110010011001,
-         0b11111111101010101100110010011001,
-         0b00000000010101010011001101100110}
-    };
-    const b32 had_16_p2[4][4] = {
-        {0b10000000010000000010000000010000, 0, 0, 0b10000000010000000010000000010000},
-        {0b11000000100001000011000000100001, 0, 0, 0b11000000100001000011000000100001},
-        {0b11110000101001011100001110010110, 0, 0, 0b11110000101001011100001110010110},
-        {0b11110000101001011100001110010110,
-         0b11110000101001011100001110010110,
-         0b11110000101001011100001110010110,
-         0b00001111010110100011110001101001}
-    };
-
-    b32 had_frag[8];
-// Only i==0 runs because 8 % 4 == 0
-#pragma unroll
-    for (int i = 0; i < 2; i++) {
-        int c_log_h = (i == 0) ? 4 : 0;
-#pragma unroll
-        for (int j = 0; j < 4; j++) {
-            bool pred1 = (had_16_p1[c_log_h - 1][j] & (1u << (31 - lane))) != 0u;
-            bool pred2 = (had_16_p2[c_log_h - 1][j] & (1u << (31 - lane))) != 0u;
-            b32 val = pred1 ? (pred2 ? p_p[c_log_h - 1] : p_n[c_log_h - 1])
-                            : (pred2 ? n_p[c_log_h - 1] : n_n[c_log_h - 1]);
-            had_frag[i * 4 + j] = val;
-        }
-        if constexpr (log_had_size % 4 == 0)
-            break;
-    }
-
-    // Load the 16x16 tile from shared into registers (tensor core layout)
-    b32 b_frag[4];
-#pragma unroll
-    for (int j = 0; j < 4; j++) {
-        int reg = ((lane & 16) == 0) ? j : (j / 2 * 2 + (1 - j % 2));
-        int real_thread_id = (reg == 0 || reg == 2) ? lane : (lane ^ 16);
-        int real_row = real_thread_id % 4;
-        int real_col = real_thread_id / 4;
-        b_frag[j] = smem[(real_row + (reg % 2) * 4) + (real_col + (j / 2) * 8) * 8];
-    }
-    if ((lane & 16) != 0) {
-        b32 t = b_frag[0];
-        b_frag[0] = b_frag[1];
-        b_frag[1] = t;
-        t = b_frag[2];
-        b_frag[2] = b_frag[3];
-        b_frag[3] = t;
-    }
-#pragma unroll
-    for (int j = 1; j < 4; j += 2) {
-        b_frag[j] = __shfl_xor_sync(0xFFFFFFFF, b_frag[j], 16);
-    }
-
-    // Do 8 stages in two 4-stage blocks using the same had_frag
-    int remaining = 8;
-    for (int iter = 0; iter < 2 && remaining > 0; iter++) {
-        mma_m16_n16_k16_b16_b16_b16_noacc<dtype>(
-            had_frag[0],
-            had_frag[1],
-            had_frag[2],
-            had_frag[3],
-            b_frag[0],
-            b_frag[1],
-            b_frag[2],
-            b_frag[3],
-            b_frag[0],
-            b_frag[1],
-            b_frag[2],
-            b_frag[3]
+    if constexpr (dtype == torch::ScalarType::Half) {
+        // f16 * f16 -> f16 (accum f16), noacc
+        asm volatile("mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
+                     "{%0, %1}, {%2, %3, %4, %5}, {%6, %7}, {%8, %9};\n\t"
+                     : "=r"(c0), "=r"(c1)
+                     : "r"(a[0]),
+                       "r"(a[1]),
+                       "r"(a[2]),
+                       "r"(a[3]),
+                       "r"(b[0]),
+                       "r"(b[1]),
+                       "r"(zero),
+                       "r"(zero));
+    } else {
+        // bf16 * bf16 -> f32 (accum f32), pack back to bf16x2
+        u32 t0, t1, t2, t3;
+        asm volatile(
+            "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+            "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};\n\t"
+            : "=r"(t0), "=r"(t1), "=r"(t2), "=r"(t3)
+            : "r"(a[0]),
+              "r"(a[1]),
+              "r"(a[2]),
+              "r"(a[3]),
+              "r"(b[0]),
+              "r"(b[1]),
+              "r"(zero),
+              "r"(zero),
+              "r"(zero),
+              "r"(zero)
         );
-        remaining -= 4;
-        if (remaining <= 0 && iter == 0) {
-            // Unused for size-256 path, left here to mirror original
-            matrix_transpose_m8_n8_b16_inplace(b_frag[0]);
-            matrix_transpose_m8_n8_b16_inplace(b_frag[1]);
-            matrix_transpose_m8_n8_b16_inplace(b_frag[2]);
-            matrix_transpose_m8_n8_b16_inplace(b_frag[3]);
-        } else {
-            b32 t = b_frag[1];
-            b_frag[1] = b_frag[2];
-            b_frag[2] = t;
-        }
+        asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;\n\t" : "=r"(c0) : "r"(t1), "r"(t0));
+        asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;\n\t" : "=r"(c1) : "r"(t3), "r"(t2));
+    }
+    return {c0, c1};
+}
+
+/**
+ * Two m16n8k16 MMAs to produce a m16n16k16 tile. No accumulation.
+ *
+ * Args
+ * - a: 4 regs (b16x2) for A.
+ * - b: 4 regs (b16x2) for B (two 16x8 halves).
+ *
+ * Returns
+ * - 4 regs (b16x2) for D.
+ */
+template <torch::ScalarType dtype>
+__device__ __forceinline__ auto mma_m16_n16_k16_b16_b16_b16_noacc(
+    const std::array<u32, 4>& a,
+    const std::array<u32, 4>& b
+) -> std::array<u32, 4>
+{
+    const auto c01 = mma_m16_n8_k16_b16_b16_b16_noacc<dtype>(a, {b[0], b[1]});
+    const auto c23 = mma_m16_n8_k16_b16_b16_b16_noacc<dtype>(a, {b[2], b[3]});
+    return {c01[0], c01[1], c23[0], c23[1]};
+}
+
+// ------------------------- B-fragment (data) swizzles ----------------------
+
+/**
+ * Warp-coalesced load of a 256-element row (as 128 u32) into shared memory.
+ * Each lane copies 4 consecutive u32s (128B per warp; 4B per u32).
+ */
+__device__ __forceinline__ auto warp_load_256_to_smem(
+    const u32* in32,
+    u32* smem,
+    int lane
+) -> void
+{
+#pragma unroll
+    for (int j = 0; j < 4; ++j)
+        smem[lane * 4 + j] = in32[lane * 4 + j];
+}
+
+/**
+ * Build the per-lane B-fragment (four b16x2 regs) from shared memory for m16n16k16 MMA.
+ * Includes the XOR-based exchange between half-warps for odd registers.
+ *
+ * Returns
+ * - 4 regs (b16x2) forming the B fragment for this lane.
+ *
+ * Notes
+ * - The mapping computes a "real thread id" that accounts for operand layout
+ *   requirements of tensor cores, then pulls the appropriate u32 from smem.
+ * - Odd registers exchange between half-warps (lane ^ 16).
+ */
+__device__ __forceinline__ auto load_B_frag_from_smem(const u32* smem, int lane)
+    -> std::array<u32, 4>
+{
+    std::array<u32, 4> b{};
+
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        // For lanes 16..31, flip (0<->1) and (2<->3) reg order to match MMA operand
+        // mapping
+        const int reg = (lane & 16) ? (j / 2 * 2 + (1 - j % 2)) : j;
+
+        // For odd regs we pick data as if from the opposite half-warp
+        const int real_tid = (reg == 0 || reg == 2) ? lane : (lane ^ 16);
+
+        // The row/col mapping inside 8x8 tiles (see NVIDIA WMMA operand layout)
+        const int real_row = real_tid % 4;
+        const int real_col = real_tid / 4;
+
+        // Address within smem (8x8 tiles across j/2 and reg%2)
+        b[j] = smem[(real_row + (reg % 2) * 4) + (real_col + (j / 2) * 8) * 8];
     }
 
-// Invert the load swizzle and write back to global
-#pragma unroll
-    for (int j = 1; j < 4; j += 2) {
-        b_frag[j] = __shfl_xor_sync(0xFFFFFFFF, b_frag[j], 16);
+    // Local shuffle: if in upper half-warp mirrors register pairing
+    if (lane & 16) {
+        swap_(b[0], b[1]);
+        swap_(b[2], b[3]);
     }
-    if ((lane & 16) != 0) {
-        b32 t = b_frag[0];
-        b_frag[0] = b_frag[1];
-        b_frag[1] = t;
-        t = b_frag[2];
-        b_frag[2] = b_frag[3];
-        b_frag[3] = t;
-    }
+
+    // Cross half-warp exchange for odd regs via XOR lane mask 16
+    const unsigned m = __activemask();
 #pragma unroll
-    for (int j = 0; j < 4; j++) {
-        int reg = ((lane & 16) == 0) ? j : (j / 2 * 2 + (1 - j % 2));
-        int real_thread_id = (reg == 0 || reg == 2) ? lane : (lane ^ 16);
-        int real_row = real_thread_id % 4;
-        int real_col = real_thread_id / 4;
-        out32[(real_row + (reg % 2) * 4) + (real_col + (reg / 2) * 8) * 8] = b_frag[j];
+    for (int j = 1; j < 4; j += 2)
+        b[j] = __shfl_xor_sync(m, b[j], 16);
+
+    return b;
+}
+
+/**
+ * Invert the swizzle performed by load_B_frag_from_smem.
+ * Returns a new fragment; the input is not modified.
+ */
+__device__ __forceinline__ auto invert_B_frag_swizzle(std::array<u32, 4> b, int lane)
+    -> std::array<u32, 4>
+{
+    const unsigned m = __activemask();
+
+    // Undo cross half-warp exchange for odd regs
+#pragma unroll
+    for (int j = 1; j < 4; j += 2)
+        b[j] = __shfl_xor_sync(m, b[j], 16);
+
+    // Undo local register mirroring for upper half-warp
+    if (lane & 16) {
+        swap_(b[0], b[1]);
+        swap_(b[2], b[3]);
+    }
+    return b;
+}
+
+/**
+ * Warp-scatter the B-fragment back to global memory matching the original layout.
+ * This is the inverse mapping of load_B_frag_from_smem followed by invert_B_frag_swizzle.
+ */
+__device__ __forceinline__ auto warp_store_B_frag_to_out(
+    const std::array<u32, 4>& b,
+    u32* out32,
+    int lane
+) -> void
+{
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        // Same reg mapping logic as in load, but applied to store address
+        const int reg = (lane & 16) ? (j / 2 * 2 + (1 - j % 2)) : j;
+        const int real_tid = (reg == 0 || reg == 2) ? lane : (lane ^ 16);
+        const int real_row = real_tid % 4;
+        const int real_col = real_tid / 4;
+        out32[(real_row + (reg % 2) * 4) + (real_col + (reg / 2) * 8) * 8] = b[j];
     }
 }
 
-// Host wrapper: one block per row, 32 threads per block, 512B smem
+/**
+ * Swap registers 1 and 2 of a 4-register fragment in-place.
+ * Used between the two fused 4-stage passes, and again to restore order.
+ */
+template <class Frag> __device__ __forceinline__ auto swap12(Frag& b) -> void
+{
+    swap_(b[1], b[2]);
+}
+
+// ---------------------- A-fragment builder for 4 stages --------------------
+
+/**
+ * Build the 4-register A-fragment encoding the Hadamard signs for 4 fused stages.
+ * The signs come from P1/P2 masks computed constexpr; register 3 uses complement.
+ *
+ * Returns
+ * - 4 regs (b16x2) with ±0.25 encoded as the target dtype (fp16/bf16).
+ */
 template <torch::ScalarType dtype>
-void run_fht(
+__device__ __forceinline__ auto build_hadamard_A_frag_4stage(int lane)
+    -> std::array<u32, 4>
+{
+    const u16 qpos = quarter_pos_bits<dtype>();
+    const u16 qneg = quarter_neg_bits<dtype>();
+
+    std::array<u32, 4> had{};
+
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        // Reg 3 uses complemented masks (flip all signs)
+        const u32 m1 = (j == 3) ? ~P1_BASE : P1_BASE;
+        const u32 m2 = (j == 3) ? ~P2_BASE : P2_BASE;
+
+        const u16 lo = msb_bit_for_lane(m1, lane) ? qpos : qneg;
+        const u16 hi = msb_bit_for_lane(m2, lane) ? qpos : qneg;
+
+        had[j] = pack_b16x2(lo, hi);
+    }
+    return had;
+}
+
+// --------------------------------- Kernel ---------------------------------
+
+/**
+ * Compute one 256-point Hadamard transform per block (one warp), for a batch of rows.
+ * grid.x = num_rows, block.x = 32, shared_mem = 128 * sizeof(u32) (512 bytes).
+ *
+ * Steps per row
+ * 1) Coalesced load to shared memory (staging).
+ * 2) Assemble B fragment with swizzles and half-warp exchanges.
+ * 3) Build A fragment (Hadamard sign pattern, 4 fused stages).
+ * 4) Two fused MMA passes with mid-pass swap(1<->2) to complete 8 stages total.
+ * 5) Undo swizzles and scatter results to global memory.
+ */
+template <torch::ScalarType dtype>
+__global__ __launch_bounds__(
+    32,
+    1
+) void hadamard_transform_256_kernel(const u16* a, u16* out, int num_rows)
+{
+    const int row = blockIdx.x;
+    if (row >= num_rows)
+        return;
+
+    const int lane = threadIdx.x & 31;
+    extern __shared__ u32 smem[]; // 128 * 4B = 512B
+
+    // Reinterpret the row as u32 stream for coalesced IO
+    const u32* in32 = reinterpret_cast<const u32*>(a + row * 256);
+    u32* out32 = reinterpret_cast<u32*>(out + row * 256);
+
+    // 1) Stage to shared memory (warp-coalesced)
+    warp_load_256_to_smem(in32, smem, lane);
+    __syncthreads();
+
+    // 2) Assemble B fragment (with lane/half-warp swizzles)
+    auto b_frag = load_B_frag_from_smem(smem, lane);
+
+    // 3) Build A fragment (Hadamard signs) in registers
+    auto had = build_hadamard_A_frag_4stage<dtype>(lane);
+
+    // 4) Two fused 4-stage MMA passes with a mid-pass register swap (1 <-> 2)
+#pragma unroll
+    for (int pass = 0; pass < 2; ++pass) {
+        b_frag = mma_m16_n16_k16_b16_b16_b16_noacc<dtype>(had, b_frag);
+        if (pass == 0)
+            swap12(b_frag);
+    }
+    // Restore original register order for store (mirror the single mid-pass swap).
+    swap12(b_frag);
+
+    // 5) Undo B-fragment swizzles and scatter results
+    b_frag = invert_B_frag_swizzle(b_frag, lane);
+    warp_store_B_frag_to_out(b_frag, out32, lane);
+}
+
+// --------------------------------- Host -----------------------------------
+
+/**
+ * Host entry point: launch the FHT-256 kernel for the given dtype.
+ * - a_mat_ptr/out_ptr: device pointers to contiguous b16 buffers.
+ * - numel: total number of elements (must be divisible by 256).
+ * - had_size: must be 256 for this implementation.
+ * - stream: CUDA stream for the launch.
+ */
+template <torch::ScalarType dtype>
+auto run_fht(
     void* a_mat_ptr,
     void* out_ptr,
     uint32_t numel,
     uint32_t had_size,
     cudaStream_t stream
-)
+) -> void
 {
-    // Only size 256 supported in this demo
-    TORCH_CHECK(had_size == (1u << 8), "This demo only supports Hadamard size 256");
+    TORCH_CHECK(
+        had_size == (1u << 8),
+        "This implementation only supports Hadamard size 256"
+    );
     TORCH_CHECK((numel % 256) == 0, "numel must be divisible by 256");
 
-    uint32_t num_rows = numel / 256;
-    dim3 grid(num_rows);
-    dim3 block(32);
-    size_t shmem = 128 * sizeof(b32); // 128 x 4 bytes
+    const uint32_t num_rows = numel / 256;
+    dim3 grid(num_rows), block(32);
+    constexpr size_t shmem = 128 * sizeof(u32); // 512B
 
-    hadamard_transform_256_kernel<8, dtype><<<grid, block, shmem, stream>>>(
-        (const b16*)a_mat_ptr,
-        (b16*)out_ptr,
-        (int)num_rows
+    hadamard_transform_256_kernel<dtype><<<grid, block, shmem, stream>>>(
+        static_cast<const u16*>(a_mat_ptr),
+        static_cast<u16*>(out_ptr),
+        static_cast<int>(num_rows)
     );
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template void run_fht<torch::ScalarType::Half>(
+// Explicit instantiations (fp16, bf16)
+template auto run_fht<torch::ScalarType::Half>(
     void* a_mat_ptr,
     void* out_ptr,
     uint32_t numel,
     uint32_t had_size,
     cudaStream_t stream
-);
-template void run_fht<torch::ScalarType::BFloat16>(
+) -> void;
+template auto run_fht<torch::ScalarType::BFloat16>(
     void* a_mat_ptr,
     void* out_ptr,
     uint32_t numel,
     uint32_t had_size,
     cudaStream_t stream
-);
+) -> void;

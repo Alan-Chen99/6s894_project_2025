@@ -29,6 +29,7 @@ dev = [
   "black>=25.11.0",
   "clang-format>=21.1.5",
   "clangd>=21.1.5.1",
+  "ipython>=9.7.0",
   "isort>=7.0.0",
   "pyright>=1.1.407",
 ]
@@ -45,6 +46,13 @@ line_length = 100
 treat_all_comments_as_code = true
 force_single_line = true
 group_by_package = true
+known_first_party = [
+  #
+  "csrc",
+  "fast_hadamard_transform",
+  "fast_hadamard_transform_cuda",
+  "hada_core",
+]
 
 [tool.pyright]
 exclude = [
