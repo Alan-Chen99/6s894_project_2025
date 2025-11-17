@@ -16,6 +16,20 @@ using std::array;
 using std::pair;
 using DType = torch::ScalarType;
 
+__host__ __device__ void assume(bool cond)
+{
+#if defined(__CUDA_ARCH__)
+    __builtin_assume(cond);
+#endif
+}
+
+#define assert_(COND) \
+    do { \
+        bool _cond_eval = (COND); \
+        assert(_cond_eval); \
+        assume(_cond_eval); \
+    } while (0)
+
 template <typename T> struct Dummy {};
 template <auto T> struct Dummy2 {};
 
@@ -28,6 +42,7 @@ template <auto T> struct Dummy2 {};
 template <int N> struct Perm {
     array<int, N> ord;
 
+    // Identity permutation of size N
     constexpr static auto ID() -> Perm<N>
     {
         array<int, N> ord{};
@@ -36,13 +51,22 @@ template <int N> struct Perm {
         return {ord};
     }
 
+    constexpr auto size() -> int { return ord.size(); }
     constexpr auto operator[](int idx) const -> int { return ord[idx]; }
 
-    constexpr auto operator+(const Perm<N>& p2) const -> Perm<N>
+    // Compose permutations of possibly different sizes.
+    // Semantics: (this ∘ p2) over max(N, M), padding the smaller one with identity.
+    // For i >= size(p2), p2 acts as identity; for k >= size(this), this acts as identity.
+    // Complexity: O(max(N, M)).
+    template <int M>
+    constexpr auto operator+(const Perm<M>& p2) const -> Perm<(N > M ? N : M)>
     {
-        Perm<N> out{};
-        for (int i = 0; i < N; ++i)
-            out.ord[i] = ord[p2[i]];
+        constexpr int R = (N > M ? N : M);
+        Perm<R> out{};
+        for (int i = 0; i < R; ++i) {
+            const int a = (i < M) ? p2[i] : i; // g(i): p2 or identity
+            out.ord[i] = (a < N) ? ord[a] : a; // f(a): this or identity
+        }
         return out;
     }
 };
@@ -104,8 +128,12 @@ template <int N> constexpr auto default_strides() -> array<int, N>
 //   (no reordering; just a fixed pattern).
 // - store(ptr, lane): write them back in the same logical coordinate system.
 //
-template <int N, Perm<N> P, DType dtype> struct Frag {
+// Frag has value semantics. It is used to represent in-register data. it does not make
+// sense to create a Frag on shared or global memory.
+template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
     array<u16, 1 << (N - 5)> data;
+
+    static constexpr auto perm() -> Perm<N> { return P; }
 
     // Sum strides of the 5 lane-controlled bits present in this lane ID.
     __device__ static auto get_lane_offset(array<int, N> strides, int lane) -> int
@@ -116,6 +144,44 @@ template <int N, Perm<N> P, DType dtype> struct Frag {
             if (lane & (1 << i))
                 ans += strides[P[i]];
         return ans;
+    }
+
+    // transpose layout without changing logical array content
+    // currently only among local dimension is supported
+    template <Perm<N> Trans>
+    __device__ auto transpose_layout() -> Frag<dtype, N, P + Trans>
+    {
+        for (int i = 0; i < 5; i++) {
+            assert(Trans[i] == i);
+        }
+
+        using Out = Frag<dtype, N, P + Trans>;
+        Out out{};
+
+        constexpr int L = 1 << (N - 5);
+        if constexpr (L == 1) {
+            out.data[0] = data[0];
+            return out;
+        }
+
+        // Invert Trans over full N (cheap); we only use the local part.
+        array<int, N> inv{};
+        for (int i = 0; i < N; ++i)
+            inv[Trans[i]] = i;
+
+        // For each old local index, compute its destination index by permuting
+        // bit-positions.
+        for (int src = 0; src < L; ++src) {
+            int dst = 0;
+            for (int k = 0; k < (N - 5); ++k) {
+                if (src & (1 << k)) {
+                    const int k_new = inv[5 + k] - 5; // where old bit k lands
+                    dst |= (1 << k_new);
+                }
+            }
+            out.data[dst] = data[src];
+        }
+        return out;
     }
 
     // Offsets for the (N-5) “local” axes (the ones not mapped to %laneid bits).
@@ -137,7 +203,7 @@ template <int N, Perm<N> P, DType dtype> struct Frag {
 
     // Load 2^(N-5) scalars for this lane.
     template <array<int, N> strides = default_strides<N>()>
-    __device__ static auto load(const u16* ptr, int lane) -> Frag<N, P, dtype>
+    __device__ static auto load(const u16* ptr, int lane) -> Frag<dtype, N, P>
     {
         ptr += get_lane_offset(strides, lane);
         constexpr auto offsets = get_local_offsets(strides);
@@ -235,14 +301,14 @@ struct HadMat {
 //   layout code is general but our tests only validate the standard Hadamard.
 //
 
-template <HadMat H = HadMat::create_had(), Perm<7> P, DType dtype>
-__device__ __forceinline__ auto rotate_4(const Frag<7, P, dtype> arr, int lane)
+template <DType dtype, HadMat H = HadMat::create_had()>
+__device__ __forceinline__ auto rotate_4(const Frag<dtype, 7> arr, int lane)
     // IMPORTANT: The hardware introduces a fixed permutation for the C fragment.
     // We compensate for it here so that rotate_4() behaves as a pure Hadamard on
     // axes {0,1,5,6} in logical coordinates. The measured compensation is:
     //   Comp = {3,4,5,0,1,2,6}
     // Hence the result fragment is annotated with P + Comp.
-    -> Frag<7, P + Perm<7>{3, 4, 5, 0, 1, 2, 6}, dtype>
+    -> Frag<dtype, 7, Perm<7>{3, 4, 5, 0, 1, 2, 6}>
 {
     // Build the A fragment signs (+/- 0.25) once per compile as lane-masks.
     // This lambda encodes the official A-fragment mapping (see big comment above).
@@ -323,6 +389,199 @@ __device__ __forceinline__ auto rotate_4(const Frag<7, P, dtype> arr, int lane)
     return {{lo16(c0), hi16(c0), lo16(c1), hi16(c1)}};
 }
 
+//////////
+
+// BlackBox is a clangd trick that otherwise does nothing.
+//
+// we wanted clangd to show full permutations on hover.
+// sometimes ShowAKA config still dont work, so we use this hack
+// clangd hover:
+//
+// no black box
+// Type: OutType (aka Frag<8, Perm<8>{{{1, 0, 2, 3, 4, 5, 6, 7}}} + out_perm,
+// (c10::ScalarType)'\x05'>)
+//
+// with black box
+// Type: BlackBox<OutType> (aka Frag<8, Perm<8>{{{3, 4, 5, 1, 0, 2, 6, 7}}},
+// c10::ScalarType::Half>)
+//
+// afaik showing full type through a error always works:
+// Dummy<decltype(ans)>::x x;
+// No type named ’x’ in ’Dummy<Frag<8, Perm<8>{{{3, 4, 5, 1, 0, 2, 6, 7}}},
+// c10::ScalarType::Half>>’ [typename_nested_not_found]
+template <typename T> struct BlackBox_ {
+    using Type = T;
+};
+template <typename T> using BlackBox = BlackBox_<T>::Type;
+
+// arg:
+//  map_fn: (Frag, lane) -> Frag function. This only need to support a standard layout
+//   for Frag.
+//  arr: Frag with axis spec P. This operation will be P dependent.
+//
+// This function operates on a submatrix given by axis P[0], P[1], .. , P[N-1]
+// (which are the logical axis corresponding to the first N pysical axis).
+//
+// the map_fn function will be run on each slice of the submatrix
+// P[0] will be passed as the 0th logical axis of map_fn
+//
+// Returns of map_fn will be aggregated and returned
+template <int N, int M, Perm<M> P, DType dtype>
+__host__ __device__ __forceinline__ auto apply_on_local_prefix(
+    const Frag<dtype, M, P> arr,
+    auto map_fn,
+    int lane
+)
+{
+    static_assert(N <= M);
+    constexpr Perm<N> out_perm =
+        decltype(map_fn(std::declval<Frag<dtype, N, Perm<N>::ID()>>(), 0))::perm();
+    constexpr int D = 1 << (M - N); // batch dimensions
+    constexpr int S = 1 << (N - 5); // #count of u16
+    static_assert(arr.data.size() == D * S);
+
+    using OutType = Frag<dtype, M, P + out_perm>;
+    BlackBox<OutType> ans;
+
+    for (int i = 0; i < D; i++) {
+        Frag<dtype, N, Perm<N>::ID()> sub_mat;
+        for (int j = 0; j < S; j++) {
+            sub_mat.data[j] = arr.data[S * i + j];
+        }
+
+        Frag<dtype, N, out_perm> res = map_fn(sub_mat, lane);
+
+        for (int j = 0; j < S; j++) {
+            ans.data[S * i + j] = res.data[j];
+        }
+    }
+
+    return ans;
+}
+
+// constexpr DType dtype = DType::BFloat16;
+
+// rotate all 8 axis
+// rotate_4 transposition happen to square to the identity, so no logical transpose here
+template <DType dtype>
+__device__ auto hada_local_8_8(const Frag<dtype, 8> frag, int lane) -> Frag<dtype, 8>
+{
+    // /**/ marked axis are rotated
+    Frag<dtype, 8, Perm<8>{3, 4, 5 /**/, 0 /**/, 1 /**/, 2, 6 /**/, 7}> tmp1 =
+        // roates position [0, 1, 5, 6]
+        apply_on_local_prefix<7>(frag, rotate_4<dtype>, lane);
+
+    Frag<dtype, 8, Perm<8>{3, 4, 5 /**/, 0 /**/, 1 /**/, 2, 7, 6 /**/}> tmp2 =
+        tmp1.template transpose_layout<Perm<8>{0, 1, 2, 3, 4, 5, 7, 6}>();
+
+    // all is rotated now
+    Frag<dtype, 8, Perm<8>{0, 1, 2, 3, 4, 5, 7, 6}> tmp3 =
+        apply_on_local_prefix<7>(tmp2, rotate_4<dtype>, lane);
+
+    // not mandatory but its free to make it identity
+    return tmp3.template transpose_layout<Perm<8>{0, 1, 2, 3, 4, 5, 7, 6}>();
+}
+
+/////////////////////////////////////////////////
+
+template <DType dtype, int N> struct RowHandler {};
+
+template <DType dtype> struct RowHandler<dtype, 8> {
+    __device__ auto handle_row(const u16* in, u16* out) -> void
+    {
+        int lane = threadIdx.x;
+        assert_(0 <= lane);
+        assert_(lane < 32);
+
+        auto in_reg = Frag<
+            dtype,
+            8,
+            Perm<8>{
+                // axis 1-4 is a coalesced load
+                1,
+                2,
+                3,
+                4,
+                5,
+                // local, assign one axis to pack to u32
+                0,
+                6,
+                7
+            }
+        >::load(in, lane);
+
+        auto out_reg = apply_on_local_prefix<8>(in_reg, hada_local_8_8<dtype>, lane);
+
+        __syncwarp();
+        out_reg.store(out, lane);
+    }
+};
+
+template <DType dtype, int N>
+__global__ auto hadamard_transform_ker(const u16* a, u16* out, int num_rows) -> void
+{
+    RowHandler<dtype, N> handler{};
+
+    int i = blockIdx.x;
+    const u16* a_i = a + i * (1 << N);
+    u16* out_i = out + i * (1 << N);
+
+    handler.handle_row(a_i, out_i);
+}
+
+template <torch::ScalarType dtype>
+auto run_fht(
+    void* a_mat_ptr,
+    void* out_ptr,
+    uint32_t numel,
+    uint32_t had_size,
+    cudaStream_t stream
+) -> void
+{
+    TORCH_CHECK(had_size == 256, "This implementation only supports Hadamard size 256");
+
+    const uint32_t num_rows = numel / 256;
+
+    hadamard_transform_ker<dtype, 8><<<num_rows, 32, 0, stream>>>(
+        static_cast<const u16*>(a_mat_ptr),
+        static_cast<u16*>(out_ptr),
+        static_cast<int>(num_rows)
+    );
+
+    // TORCH_CHECK((numel % 256) == 0, "numel must be divisible by 256");
+
+    // const uint32_t num_rows = numel / 256;
+    // dim3 grid(num_rows), block(32);
+    // constexpr size_t shmem = 128 * sizeof(u32); // 512B
+
+    // hadamard_transform_256_kernel<dtype><<<grid, block, shmem, stream>>>(
+    //     static_cast<const u16*>(a_mat_ptr),
+    //     static_cast<u16*>(out_ptr),
+    //     static_cast<int>(num_rows)
+    // );
+    // C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// Explicit instantiations (fp16, bf16)
+template auto run_fht<torch::ScalarType::Half>(
+    void* a_mat_ptr,
+    void* out_ptr,
+    uint32_t numel,
+    uint32_t had_size,
+    cudaStream_t stream
+) -> void;
+template auto run_fht<torch::ScalarType::BFloat16>(
+    void* a_mat_ptr,
+    void* out_ptr,
+    uint32_t numel,
+    uint32_t had_size,
+    cudaStream_t stream
+) -> void;
+
+/////////////////////////////////////////////////
+// AI generated test/debug code for test_rotate4
+// use with caution
+
 // -------------------- Dtype and reference helpers ---------------------------
 //
 // Utility conversions for building a reference Hadamard on the device.
@@ -393,8 +652,8 @@ __device__ void test_rotate_4(const u16* in128, u16* out1, u16* out2)
     __syncwarp();
 
     // Call the Tensor Core path.
-    const auto in = Frag<7, P, dtype>::load(in128, lane);
-    const auto rotated = rotate_4(in, lane);
+    const auto in = Frag<dtype, 7, P>::load(in128, lane);
+    const auto rotated = rotate_4<dtype>(in, lane);
     rotated.store(out2, lane);
 
     __syncwarp();
@@ -544,3 +803,5 @@ void test_rotate4()
     run_rotate4_test<DType::Half>();
     run_rotate4_test<DType::BFloat16>();
 }
+
+/////////////////////////////////////////////////

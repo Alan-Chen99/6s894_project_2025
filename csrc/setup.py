@@ -18,7 +18,7 @@ setup(
             name="csrc",
             sources=[
                 "hadamard_transform.cpp",
-                "hadamard_transform_cuda.cu",
+                # "hadamard_transform_cuda.cu",
                 "main.cu",
             ],
             extra_compile_args={
