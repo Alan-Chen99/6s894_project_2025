@@ -54,13 +54,13 @@ torch::Tensor hadamard_transform(at::Tensor& in, bool inplace)
             stream
         );
     } else {
-        run_fht<torch::ScalarType::BFloat16>(
-            x.data_ptr(),
-            out.data_ptr(),
-            x.numel(),
-            had_size,
-            stream
-        );
+        // run_fht<torch::ScalarType::BFloat16>(
+        //     x.data_ptr(),
+        //     out.data_ptr(),
+        //     x.numel(),
+        //     had_size,
+        //     stream
+        // );
     }
 
     if (numel % 256 != 0) {

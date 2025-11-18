@@ -1,3 +1,6 @@
+// comment out to enable assert
+#define NDEBUG
+
 #include "defs.h"
 #include <array>
 #include <cstdint>
@@ -12,6 +15,7 @@ using u16 = uint16_t;
 using u32 = uint32_t;
 using std::array;
 using std::pair;
+using std::tuple;
 using DType = torch::ScalarType;
 
 __host__ __device__ void assume(bool cond)
@@ -106,6 +110,78 @@ template <int N> constexpr auto default_strides() -> array<int, N>
     return ans;
 }
 
+template <int N> constexpr auto find_item(array<int, N> arr, int item) -> int
+{
+    for (int i = 0; i < N; i++) {
+        if (arr[i] == item) {
+            return i;
+        }
+    }
+    assert(false);
+    return 0;
+}
+
+template <int N>
+constexpr auto compute_pack(array<int, N> offsets)
+    -> tuple<array<int, N / 2>, array<int, N / 2>, array<int, N / 2>>
+{
+    array<int, N / 2> offsets_load{};
+    int cur = 0;
+    for (int offset : offsets) {
+        if (offset % 2 == 0) {
+            offsets_load[cur] = offset;
+            cur++;
+        }
+    }
+    assert(cur == N / 2);
+
+    array<int, N / 2> idxs_even{};
+    array<int, N / 2> idxs_odd{};
+
+    for (int i = 0; i < N; i++) {
+        if (offsets[i] % 2 == 0) {
+            auto item = find_item<N / 2>(offsets_load, offsets[i]);
+            idxs_even[item] = i;
+        } else {
+            auto item = find_item<N / 2>(offsets_load, offsets[i] - 1);
+            idxs_odd[item] = i;
+        }
+    }
+    return {offsets_load, idxs_even, idxs_odd};
+}
+
+template <int N, array<int, N> offsets>
+__device__ __forceinline__ auto load_offsets_aligned(const u16* base) -> array<u16, N>
+{
+    constexpr auto offsets_packed = compute_pack<N>(offsets);
+    auto [offsets_load, idxs_even, idxs_odd] = offsets_packed;
+
+    array<u16, N> ans;
+    const u32* base_ = reinterpret_cast<const u32*>(base);
+
+    for (int i = 0; i < N / 2; i++) {
+        auto tmp = base_[offsets_load[i] / 2];
+        ans[idxs_even[i]] = lo16(tmp);
+        ans[idxs_odd[i]] = hi16(tmp);
+    }
+
+    return ans;
+}
+
+template <int N, array<int, N> offsets>
+__device__ __forceinline__ auto store_offsets_aligned(u16* base, array<u16, N> data)
+    -> void
+{
+    constexpr auto offsets_packed = compute_pack<N>(offsets);
+    auto [offsets_load, idxs_even, idxs_odd] = offsets_packed;
+
+    u32* base_ = reinterpret_cast<u32*>(base);
+
+    for (int i = 0; i < N / 2; i++) {
+        auto val = pack_b16x2(data[idxs_even[i]], data[idxs_odd[i]]);
+        base_[offsets_load[i] / 2] = val;
+    }
+}
 // ------------------------- Fragment view (Frag) -----------------------------
 //
 // Frag<N,P,dtype> is a tiny logical view over the 128-element (N=7) warp tile,
@@ -206,11 +282,8 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
         ptr += get_lane_offset(strides, lane);
         constexpr auto offsets = get_local_offsets(strides);
 
-        array<u16, 1 << (N - 5)> data{};
-#pragma unroll
-        for (int i = 0; i < int(data.size()); i++)
-            data[i] = ptr[offsets[i]];
-        return {data};
+        array<u16, 1 << (N - 5)> ans = load_offsets_aligned<offsets.size(), offsets>(ptr);
+        return {ans};
     }
 
     // Store 2^(N-5) scalars for this lane.
@@ -219,9 +292,8 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
     {
         ptr += get_lane_offset(strides, lane);
         constexpr auto offsets = get_local_offsets(strides);
-#pragma unroll
-        for (int i = 0; i < int(data.size()); i++)
-            ptr[offsets[i]] = data[i];
+
+        store_offsets_aligned<offsets.size(), offsets>(ptr, data);
     }
 };
 
@@ -328,6 +400,10 @@ __device__ __forceinline__ auto rotate_4(const Frag<dtype, 7> arr, int lane)
         }
         return pos;
     });
+
+    // TODO:
+    // Dummy2<masks>::x x;
+    // masks apparently only have 3 distinct values, why?
 
     // Turn masks into per-lane ai register values (±0.25 in the chosen dtype).
     const u16 qpos = quarter_pos_bits<dtype>();
@@ -568,13 +644,13 @@ template auto run_fht<torch::ScalarType::Half>(
     uint32_t had_size,
     cudaStream_t stream
 ) -> void;
-template auto run_fht<torch::ScalarType::BFloat16>(
-    void* a_mat_ptr,
-    void* out_ptr,
-    uint32_t numel,
-    uint32_t had_size,
-    cudaStream_t stream
-) -> void;
+// template auto run_fht<torch::ScalarType::BFloat16>(
+//     void* a_mat_ptr,
+//     void* out_ptr,
+//     uint32_t numel,
+//     uint32_t had_size,
+//     cudaStream_t stream
+// ) -> void;
 
 // /////////////////////////////////////////////////
 // // AI generated test/debug code for test_rotate4
