@@ -5,10 +5,8 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <iostream>
 #include <mma.h>
 #include <torch/extension.h>
-#include <vector>
 
 using u16 = uint16_t;
 using u32 = uint32_t;
@@ -578,230 +576,230 @@ template auto run_fht<torch::ScalarType::BFloat16>(
     cudaStream_t stream
 ) -> void;
 
-/////////////////////////////////////////////////
-// AI generated test/debug code for test_rotate4
-// use with caution
+// /////////////////////////////////////////////////
+// // AI generated test/debug code for test_rotate4
+// // use with caution
 
-// -------------------- Dtype and reference helpers ---------------------------
-//
-// Utility conversions for building a reference Hadamard on the device.
-//
-template <DType dtype> __device__ __forceinline__ float bits_to_float(u16 bits)
-{
-    if constexpr (dtype == DType::Half)
-        return __half2float(__ushort_as_half(bits));
-    else
-        return __bfloat162float(__ushort_as_bfloat16(bits));
-}
+// // -------------------- Dtype and reference helpers ---------------------------
+// //
+// // Utility conversions for building a reference Hadamard on the device.
+// //
+// template <DType dtype> __device__ __forceinline__ float bits_to_float(u16 bits)
+// {
+//     if constexpr (dtype == DType::Half)
+//         return __half2float(__ushort_as_half(bits));
+//     else
+//         return __bfloat162float(__ushort_as_bfloat16(bits));
+// }
 
-template <DType dtype> __device__ __forceinline__ u16 float_to_bits(float x)
-{
-    if constexpr (dtype == DType::Half)
-        return __half_as_ushort(__float2half_rn(x));
-    else
-        return __bfloat16_as_ushort(__float2bfloat16_rn(x));
-}
+// template <DType dtype> __device__ __forceinline__ u16 float_to_bits(float x)
+// {
+//     if constexpr (dtype == DType::Half)
+//         return __half_as_ushort(__float2half_rn(x));
+//     else
+//         return __bfloat16_as_ushort(__float2bfloat16_rn(x));
+// }
 
-// In-place 1D Hadamard along axis ax for a 7D 2x...x2 tile (N must be 7).
-// This is the standard butterfly with normalization (1/sqrt(2)).
-//
-template <DType dtype>
-__device__ __forceinline__ void hadamard_axis_inplace(u16* buf, int ax)
-{
-    const int stride = 1 << ax;
-    const float s = rsqrtf(2.0f);
-#pragma unroll
-    for (int i = 0; i < 128; ++i) {
-        if (!(i & stride)) {
-            const int i0 = i;
-            const int i1 = i + stride;
-            const float x = bits_to_float<dtype>(buf[i0]);
-            const float y = bits_to_float<dtype>(buf[i1]);
-            buf[i0] = float_to_bits<dtype>((x + y) * s);
-            buf[i1] = float_to_bits<dtype>((x - y) * s);
-        }
-    }
-}
+// // In-place 1D Hadamard along axis ax for a 7D 2x...x2 tile (N must be 7).
+// // This is the standard butterfly with normalization (1/sqrt(2)).
+// //
+// template <DType dtype>
+// __device__ __forceinline__ void hadamard_axis_inplace(u16* buf, int ax)
+// {
+//     const int stride = 1 << ax;
+//     const float s = rsqrtf(2.0f);
+// #pragma unroll
+//     for (int i = 0; i < 128; ++i) {
+//         if (!(i & stride)) {
+//             const int i0 = i;
+//             const int i1 = i + stride;
+//             const float x = bits_to_float<dtype>(buf[i0]);
+//             const float y = bits_to_float<dtype>(buf[i1]);
+//             buf[i0] = float_to_bits<dtype>((x + y) * s);
+//             buf[i1] = float_to_bits<dtype>((x - y) * s);
+//         }
+//     }
+// }
 
-// ------------------- Kernels (test scaffolding) -----------------------------
-//
-// identity_input_kernel: write a one-hot column at index trace_idx.
-// test_rotate_4: compare rotate_4 against a straightforward reference
-//                implementation that runs the 4 one-axis Hadamards.
-// kernel_rotate_4: limit execution to the first warp of a block.
-//
-template <DType dtype> __global__ void identity_input_kernel(u16* in128, int trace_idx)
-{
-    const int i = threadIdx.x;
-    if (i < 128)
-        in128[i] = float_to_bits<dtype>((i == trace_idx) ? 1.0f : 0.0f);
-}
+// // ------------------- Kernels (test scaffolding) -----------------------------
+// //
+// // identity_input_kernel: write a one-hot column at index trace_idx.
+// // test_rotate_4: compare rotate_4 against a straightforward reference
+// //                implementation that runs the 4 one-axis Hadamards.
+// // kernel_rotate_4: limit execution to the first warp of a block.
+// //
+// template <DType dtype> __global__ void identity_input_kernel(u16* in128, int trace_idx)
+// {
+//     const int i = threadIdx.x;
+//     if (i < 128)
+//         in128[i] = float_to_bits<dtype>((i == trace_idx) ? 1.0f : 0.0f);
+// }
 
-template <Perm<7> P, DType dtype>
-__device__ void test_rotate_4(const u16* in128, u16* out1, u16* out2)
-{
-    const int lane = threadIdx.x & 31;
+// template <Perm<7> P, DType dtype>
+// __device__ void test_rotate_4(const u16* in128, u16* out1, u16* out2)
+// {
+//     const int lane = threadIdx.x & 31;
 
-    // Build reference on a single lane to avoid redundant work.
-    if (lane == 0) {
-        for (int i = 0; i < 128; ++i)
-            out1[i] = in128[i];
-        for (int ax_local : {0, 1, 5, 6})
-            hadamard_axis_inplace<dtype>(out1, P[ax_local]);
-    }
-    __syncwarp();
+//     // Build reference on a single lane to avoid redundant work.
+//     if (lane == 0) {
+//         for (int i = 0; i < 128; ++i)
+//             out1[i] = in128[i];
+//         for (int ax_local : {0, 1, 5, 6})
+//             hadamard_axis_inplace<dtype>(out1, P[ax_local]);
+//     }
+//     __syncwarp();
 
-    // Call the Tensor Core path.
-    const auto in = Frag<dtype, 7, P>::load(in128, lane);
-    const auto rotated = rotate_4<dtype>(in, lane);
-    rotated.store(out2, lane);
+//     // Call the Tensor Core path.
+//     const auto in = Frag<dtype, 7, P>::load(in128, lane);
+//     const auto rotated = rotate_4<dtype>(in, lane);
+//     rotated.store(out2, lane);
 
-    __syncwarp();
-}
+//     __syncwarp();
+// }
 
-template <DType dtype>
-__global__ void kernel_rotate_4(const u16* in128, u16* out1, u16* out2)
-{
-    // Only the first warp participates.
-    if ((threadIdx.x & ~31) != 0)
-        return;
-    test_rotate_4<Perm<7>::ID(), dtype>(in128, out1, out2);
-}
+// template <DType dtype>
+// __global__ void kernel_rotate_4(const u16* in128, u16* out1, u16* out2)
+// {
+//     // Only the first warp participates.
+//     if ((threadIdx.x & ~31) != 0)
+//         return;
+//     test_rotate_4<Perm<7>::ID(), dtype>(in128, out1, out2);
+// }
 
-// ------------------- Host harness (self-test) -------------------------------
-//
-// The functions below construct a column of the 7D Hadamard applied
-// on axes {0,1,5,6} in host float, compare it with device results,
-// and print the discovered mapping (should be identity on success).
-//
-template <DType dtype> auto host_bits_to_float(u16 bits) -> float
-{
-    if constexpr (dtype == DType::Half) {
-        at::Half h;
-        memcpy(&h, &bits, sizeof(u16));
-        return float(h);
-    } else {
-        at::BFloat16 b;
-        memcpy(&b, &bits, sizeof(u16));
-        return float(b);
-    }
-}
+// // ------------------- Host harness (self-test) -------------------------------
+// //
+// // The functions below construct a column of the 7D Hadamard applied
+// // on axes {0,1,5,6} in host float, compare it with device results,
+// // and print the discovered mapping (should be identity on success).
+// //
+// template <DType dtype> auto host_bits_to_float(u16 bits) -> float
+// {
+//     if constexpr (dtype == DType::Half) {
+//         at::Half h;
+//         memcpy(&h, &bits, sizeof(u16));
+//         return float(h);
+//     } else {
+//         at::BFloat16 b;
+//         memcpy(&b, &bits, sizeof(u16));
+//         return float(b);
+//     }
+// }
 
-// Reference column for a one-hot input at col_idx, after applying the 4-axis
-// Hadamard on axes {0,1,5,6}. Batch axes {2,3,4} are identity.
-auto get_reference_hadamard_col(int col_idx) -> std::vector<float>
-{
-    std::vector<float> col(128);
-    float scale = 0.25f; // (1/sqrt(2))^4 from 4 axes
-    for (int row_idx = 0; row_idx < 128; ++row_idx) {
-        int had_axes_mask = (1 << 0) | (1 << 1) | (1 << 5) | (1 << 6);
-        int val = (row_idx & had_axes_mask) & (col_idx & had_axes_mask);
-        col[row_idx] = (__builtin_popcount(val) % 2 == 0) ? scale : -scale;
+// // Reference column for a one-hot input at col_idx, after applying the 4-axis
+// // Hadamard on axes {0,1,5,6}. Batch axes {2,3,4} are identity.
+// auto get_reference_hadamard_col(int col_idx) -> std::vector<float>
+// {
+//     std::vector<float> col(128);
+//     float scale = 0.25f; // (1/sqrt(2))^4 from 4 axes
+//     for (int row_idx = 0; row_idx < 128; ++row_idx) {
+//         int had_axes_mask = (1 << 0) | (1 << 1) | (1 << 5) | (1 << 6);
+//         int val = (row_idx & had_axes_mask) & (col_idx & had_axes_mask);
+//         col[row_idx] = (__builtin_popcount(val) % 2 == 0) ? scale : -scale;
 
-        // Apply identity for batch axes
-        int batch_axes_mask = (1 << 2) | (1 << 3) | (1 << 4);
-        if ((row_idx & batch_axes_mask) != (col_idx & batch_axes_mask))
-            col[row_idx] = 0.0f;
-    }
-    return col;
-}
+//         // Apply identity for batch axes
+//         int batch_axes_mask = (1 << 2) | (1 << 3) | (1 << 4);
+//         if ((row_idx & batch_axes_mask) != (col_idx & batch_axes_mask))
+//             col[row_idx] = 0.0f;
+//     }
+//     return col;
+// }
 
-// Return the ref column index that best matches mma_output, or -1 if none is close.
-template <DType dtype> static int find_best_match(const array<u16, 128>& mma_output)
-{
-    int best_match_idx = -1;
-    float min_err = 1e9f;
+// // Return the ref column index that best matches mma_output, or -1 if none is close.
+// template <DType dtype> static int find_best_match(const array<u16, 128>& mma_output)
+// {
+//     int best_match_idx = -1;
+//     float min_err = 1e9f;
 
-    for (int ref_idx = 0; ref_idx < 128; ++ref_idx) {
-        auto ref_col = get_reference_hadamard_col(ref_idx);
-        float current_err = 0.0f;
-        for (int i = 0; i < 128; ++i) {
-            float diff = host_bits_to_float<dtype>(mma_output[i]) - ref_col[i];
-            current_err += diff * diff;
-        }
-        if (current_err < min_err) {
-            min_err = current_err;
-            best_match_idx = ref_idx;
-        }
-    }
-    // Heuristic to declare "no match"
-    if (min_err > 1.0f)
-        return -1;
-    return best_match_idx;
-}
+//     for (int ref_idx = 0; ref_idx < 128; ++ref_idx) {
+//         auto ref_col = get_reference_hadamard_col(ref_idx);
+//         float current_err = 0.0f;
+//         for (int i = 0; i < 128; ++i) {
+//             float diff = host_bits_to_float<dtype>(mma_output[i]) - ref_col[i];
+//             current_err += diff * diff;
+//         }
+//         if (current_err < min_err) {
+//             min_err = current_err;
+//             best_match_idx = ref_idx;
+//         }
+//     }
+//     // Heuristic to declare "no match"
+//     if (min_err > 1.0f)
+//         return -1;
+//     return best_match_idx;
+// }
 
-template <DType dtype> static bool run_rotate4_test()
-{
-    auto cucheck = [](cudaError_t e, const char* what) {
-        if (e != cudaSuccess) {
-            std::cerr << what << " failed: " << cudaGetErrorString(e) << std::endl;
-            std::terminate();
-        }
-    };
+// template <DType dtype> static bool run_rotate4_test()
+// {
+//     auto cucheck = [](cudaError_t e, const char* what) {
+//         if (e != cudaSuccess) {
+//             std::cerr << what << " failed: " << cudaGetErrorString(e) << std::endl;
+//             std::terminate();
+//         }
+//     };
 
-    u16 *d_in, *d_out1, *d_out2;
-    cucheck(cudaMalloc(&d_in, 128 * sizeof(u16)), "malloc in");
-    cucheck(cudaMalloc(&d_out1, 128 * sizeof(u16)), "malloc out1");
-    cucheck(cudaMalloc(&d_out2, 128 * sizeof(u16)), "malloc out2");
+//     u16 *d_in, *d_out1, *d_out2;
+//     cucheck(cudaMalloc(&d_in, 128 * sizeof(u16)), "malloc in");
+//     cucheck(cudaMalloc(&d_out1, 128 * sizeof(u16)), "malloc out1");
+//     cucheck(cudaMalloc(&d_out2, 128 * sizeof(u16)), "malloc out2");
 
-    array<u16, 128> h_out2{};
-    std::vector<int> permutation_map(128);
-    int mismatches = 0;
+//     array<u16, 128> h_out2{};
+//     std::vector<int> permutation_map(128);
+//     int mismatches = 0;
 
-    const char* name = (dtype == DType::Half) ? "f16" : "bf16";
-    printf("--- Discovering permutation map for %s ---\n", name);
+//     const char* name = (dtype == DType::Half) ? "f16" : "bf16";
+//     printf("--- Discovering permutation map for %s ---\n", name);
 
-    for (int trace_idx = 0; trace_idx < 128; ++trace_idx) {
-        identity_input_kernel<dtype><<<1, 128>>>(d_in, trace_idx);
-        kernel_rotate_4<dtype><<<1, 32>>>(d_in, d_out1, d_out2);
-        cucheck(cudaDeviceSynchronize(), "kernel sync");
+//     for (int trace_idx = 0; trace_idx < 128; ++trace_idx) {
+//         identity_input_kernel<dtype><<<1, 128>>>(d_in, trace_idx);
+//         kernel_rotate_4<dtype><<<1, 32>>>(d_in, d_out1, d_out2);
+//         cucheck(cudaDeviceSynchronize(), "kernel sync");
 
-        cucheck(
-            cudaMemcpy(h_out2.data(), d_out2, 128 * sizeof(u16), cudaMemcpyDeviceToHost),
-            "D->H out2"
-        );
+//         cucheck(
+//             cudaMemcpy(h_out2.data(), d_out2, 128 * sizeof(u16),
+//             cudaMemcpyDeviceToHost), "D->H out2"
+//         );
 
-        int actual_output_idx = find_best_match<dtype>(h_out2);
-        permutation_map[trace_idx] = actual_output_idx;
-        if (trace_idx != actual_output_idx)
-            mismatches++;
-    }
+//         int actual_output_idx = find_best_match<dtype>(h_out2);
+//         permutation_map[trace_idx] = actual_output_idx;
+//         if (trace_idx != actual_output_idx)
+//             mismatches++;
+//     }
 
-    printf("Discovered mapping (input_idx -> actual_output_idx):\n");
-    for (int i = 0; i < 128; i += 8) {
-        for (int j = 0; j < 8; ++j)
-            printf("  %3d->%-3d ", i + j, permutation_map[i + j]);
-        printf("\n");
-    }
+//     printf("Discovered mapping (input_idx -> actual_output_idx):\n");
+//     for (int i = 0; i < 128; i += 8) {
+//         for (int j = 0; j < 8; ++j)
+//             printf("  %3d->%-3d ", i + j, permutation_map[i + j]);
+//         printf("\n");
+//     }
 
-    if (mismatches == 0) {
-        printf(
-            "[OK] rotate_4 test (%s): The hardcoded permutation appears correct.\n",
-            name
-        );
-    } else {
-        printf(
-            "[FAIL] rotate_4 test (%s): Found %d mismatches in permutation map.\n",
-            name,
-            mismatches
-        );
-        printf(
-            "The map above IS the permutation the hardware performs. Update the Frag "
-            "return type in rotate_4 to match it.\n"
-        );
-    }
+//     if (mismatches == 0) {
+//         printf(
+//             "[OK] rotate_4 test (%s): The hardcoded permutation appears correct.\n",
+//             name
+//         );
+//     } else {
+//         printf(
+//             "[FAIL] rotate_4 test (%s): Found %d mismatches in permutation map.\n",
+//             name,
+//             mismatches
+//         );
+//         printf(
+//             "The map above IS the permutation the hardware performs. Update the Frag "
+//             "return type in rotate_4 to match it.\n"
+//         );
+//     }
 
-    cucheck(cudaFree(d_in), "free in");
-    cucheck(cudaFree(d_out1), "free out1");
-    cucheck(cudaFree(d_out2), "free out2");
+//     cucheck(cudaFree(d_in), "free in");
+//     cucheck(cudaFree(d_out1), "free out1");
+//     cucheck(cudaFree(d_out2), "free out2");
 
-    return mismatches == 0;
-}
+//     return mismatches == 0;
+// }
 
-void test_rotate4()
-{
-    run_rotate4_test<DType::Half>();
-    run_rotate4_test<DType::BFloat16>();
-}
+// void test_rotate4()
+// {
+//     run_rotate4_test<DType::Half>();
+//     run_rotate4_test<DType::BFloat16>();
+// }
 
 /////////////////////////////////////////////////

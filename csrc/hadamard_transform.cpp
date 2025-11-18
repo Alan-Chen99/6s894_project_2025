@@ -85,5 +85,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         py::arg("inplace") = false
     );
 
-    m.def("test_rotate4", &test_rotate4, "test_rotate4");
+    // m.def("test_rotate4", &test_rotate4, "test_rotate4");
 }
