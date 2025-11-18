@@ -73,6 +73,15 @@ template <int N> struct Perm {
     }
 };
 
+template <DType dtype> struct CudaType;
+
+template <> struct CudaType<DType::Half> {
+    using Type = __nv_half;
+};
+template <> struct CudaType<DType::BFloat16> {
+    using Type = __nv_bfloat16;
+};
+
 // ------------------- Small helpers (packing and bits) -----------------------
 
 __device__ __forceinline__ u32 pack_b16x2(u16 lo, u16 hi)
@@ -81,6 +90,26 @@ __device__ __forceinline__ u32 pack_b16x2(u16 lo, u16 hi)
 }
 __device__ __forceinline__ u16 lo16(u32 x) { return static_cast<u16>(x & 0xFFFFu); }
 __device__ __forceinline__ u16 hi16(u32 x) { return static_cast<u16>(x >> 16); }
+
+template <DType dtype> __device__ __forceinline__ u16 add16(u16 x, u16 y)
+{
+    using T = CudaType<dtype>::Type;
+    T x_ = std::bit_cast<T>(x);
+    T y_ = std::bit_cast<T>(y);
+    T ans = x_ + y_;
+    return std::bit_cast<u16>(ans);
+}
+
+template <DType dtype> __device__ __forceinline__ u16 sub16(u16 x, u16 y)
+{
+    using T = CudaType<dtype>::Type;
+    T x_ = std::bit_cast<T>(x);
+    T y_ = std::bit_cast<T>(y);
+    T ans = x_ - y_;
+    return std::bit_cast<u16>(ans);
+}
+
+__device__ void testfn(u16 a, u16 b) { add16<DType::BFloat16>(a, b); }
 
 // Build bit patterns for ±1/4 in f16/bf16. This is the scale factor for a 4-axis
 // Hadamard: (1/sqrt(2))^4 = 0.25. Using constants here avoids extra FP ops.
@@ -184,6 +213,8 @@ __device__ __forceinline__ auto store_offsets_aligned(u16* base, array<u16, N> d
 }
 // ------------------------- Fragment view (Frag) -----------------------------
 //
+// DOC OF FRAG OUTDATED
+///
 // Frag<N,P,dtype> is a tiny logical view over the 128-element (N=7) warp tile,
 // distributed across lanes as imposed by the MMA instruction. Each lane owns
 // 2^(N-5) scalars (for N=7, that's 4 scalars).
@@ -195,7 +226,6 @@ __device__ __forceinline__ auto store_offsets_aligned(u16* base, array<u16, N> d
 //
 // IMPORTANT: Both lane and local offsets are computed with the SAME permutation P.
 // This keeps the logical axes coherent even when the hardware shuffles bits.
-// A prior bug ignored P for local offsets; do not revert that.
 //
 // Usage:
 // - load(ptr, lane): read this lane’s 4 scalars from memory into registers
@@ -586,7 +616,7 @@ template <DType dtype> struct RowHandler<dtype, 8> {
 
         auto out_reg = apply_on_local_prefix<8>(in_reg, hada_local_8_8<dtype>, lane);
 
-        __syncwarp();
+        // __syncwarp();
         out_reg.store(out, lane);
     }
 };
@@ -596,11 +626,12 @@ __global__ auto hadamard_transform_ker(const u16* a, u16* out, int num_rows) -> 
 {
     RowHandler<dtype, N> handler{};
 
-    int i = blockIdx.x;
-    const u16* a_i = a + i * (1 << N);
-    u16* out_i = out + i * (1 << N);
+    for (int i = blockIdx.x; i < num_rows; i += gridDim.x) {
+        const u16* a_i = a + i * (1 << N);
+        u16* out_i = out + i * (1 << N);
 
-    handler.handle_row(a_i, out_i);
+        handler.handle_row(a_i, out_i);
+    }
 }
 
 template <torch::ScalarType dtype>
@@ -616,7 +647,7 @@ auto run_fht(
 
     const uint32_t num_rows = numel / 256;
 
-    hadamard_transform_ker<dtype, 8><<<num_rows, 32, 0, stream>>>(
+    hadamard_transform_ker<dtype, 8><<<48 * 4, 32, 0, stream>>>(
         static_cast<const u16*>(a_mat_ptr),
         static_cast<u16*>(out_ptr),
         static_cast<int>(num_rows)
