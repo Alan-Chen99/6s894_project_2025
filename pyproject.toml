@@ -11,24 +11,31 @@ dependencies = [
   "psutil>=7.1.3",
   "scipy>=1.16.3",
   "torch>=2.9.1",
+  "setuptools>=80.9.0",
   #
   "csrc",
   "fast-hadamard-transform",
   "hada_core",
+  # "clang>=20.1.5",
 ]
 
 [tool.uv.sources]
+csrc = { path = "./csrc" }
 fast-hadamard-transform = { git = "https://github.com/Dao-AILab/fast-hadamard-transform.git" }
 hada_core = { path = "./HadaCore" }
-csrc = { path = "./csrc" }
+
+[tool.uv.extra-build-dependencies]
+csrc = ["setuptools", { requirement = "torch", match-runtime = true }]
+fast-hadamard-transform = [{ requirement = "torch", match-runtime = true }]
+hada-core = ["setuptools", { requirement = "torch", match-runtime = true }]
 
 [dependency-groups]
 dev = [
   "autoflake>=2.3.1",
   "basedpyright>=1.33.0",
   "black>=25.11.0",
-  "clang-format>=21.1.5",
-  "clangd>=21.1.5.1",
+  "clang-tools>=0.16.0",
+  "clangd>=21.1.6",
   "ipython>=9.7.0",
   "isort>=7.0.0",
   "pyright>=1.1.407",

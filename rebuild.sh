@@ -8,4 +8,4 @@ cd "$(dirname "$0")"
 # its likely not configured correctly but we just touch the file for now
 touch csrc/setup.py
 
-uv sync --no-build-isolation --verbose
+uv sync --verbose

@@ -35,6 +35,8 @@ setup(
                     # c++20 on torch:
                     # warning #3189-D: "module" is parsed as an identifier rather than a keyword
                     "-diag-suppress=3189",
+                    # get ptx files in ./build
+                    "--keep",
                 ]
                 + versions,
             },
