@@ -95,7 +95,7 @@ CASES: dict[str, BenchmarkTarget] = {
     "AddOne": AddOne(),
     # "FastHada": FastHada(),
     "HadaCore": HadaCore(),
-    "OwnHada": OwnHada(),
+    "Ours": OwnHada(),
 }
 
 ##########
@@ -128,7 +128,7 @@ def _bench_many(fn: Callable[[], None], iters: int, warmup: int = 3) -> dict[str
 test_sizes_m = [256, 4096]
 
 # test_elem_counts = [1 << i for i in range(9, 26, 1)]  # 32MB # 64MB # 2**28 = 256M
-test_elem_counts = [1 << i for i in range(12, 26, 1)]  # 32MB # 64MB # 2**28 = 256M
+test_elem_counts = [1 << 27, 1 << 28]  # 32MB # 64MB # 2**28 = 256M
 
 
 @dataclass
@@ -136,7 +136,7 @@ class TestConfig:
     """Configuration for the test suite."""
 
     check: bool = False
-    runs_per_size: int = 100
+    runs_per_size: int = 200
     json_output_file: str | None = f"benchmark_{datetime.now():%Y-%m-%d_%H-%M-%S}.json"
 
     benchmark_cases: list[str] = field(default_factory=lambda: list(CASES.keys()))
@@ -247,6 +247,8 @@ def main(cfg: TestConfig) -> None:
     # torch setup
     torch.manual_seed(0)
     device_name: str = torch.cuda.get_device_name(0)
+    print(f"running on {device_name}")
+    print()
 
     # tolerances match the reference script
     atol_map: dict[torch.dtype, float] = {

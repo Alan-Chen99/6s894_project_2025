@@ -704,7 +704,7 @@ template <DType dtype> struct RowHandler<dtype, 12> {
 
         __shared__ u16 sm[S * 16];
 
-        load_rot_8<dtype, 16, 3, S>(in, sm, lane);
+        load_rot_8<dtype, 16, 7, S>(in, sm, lane);
 
         __syncwarp();
 
