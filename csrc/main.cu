@@ -1,6 +1,7 @@
 // comment out to enable assert
 #define NDEBUG
 
+#include "cuda_utils.h"
 #include "defs.h"
 #include <array>
 #include <cstdint>
@@ -91,25 +92,36 @@ __device__ __forceinline__ u32 pack_b16x2(u16 lo, u16 hi)
 __device__ __forceinline__ u16 lo16(u32 x) { return static_cast<u16>(x & 0xFFFFu); }
 __device__ __forceinline__ u16 hi16(u32 x) { return static_cast<u16>(x >> 16); }
 
-template <DType dtype> __device__ __forceinline__ u16 add16(u16 x, u16 y)
+template <std::size_t... Is, typename F>
+__device__ void static_for_impl(std::index_sequence<Is...>, F&& f)
 {
-    using T = CudaType<dtype>::Type;
-    T x_ = std::bit_cast<T>(x);
-    T y_ = std::bit_cast<T>(y);
-    T ans = x_ + y_;
-    return std::bit_cast<u16>(ans);
+    (f.template operator()<Is>(), ...);
 }
 
-template <DType dtype> __device__ __forceinline__ u16 sub16(u16 x, u16 y)
+template <std::size_t N, typename F> __device__ void static_for(F&& f)
 {
-    using T = CudaType<dtype>::Type;
-    T x_ = std::bit_cast<T>(x);
-    T y_ = std::bit_cast<T>(y);
-    T ans = x_ - y_;
-    return std::bit_cast<u16>(ans);
+    static_for_impl(std::make_index_sequence<N>{}, std::forward<F>(f));
 }
 
-__device__ void testfn(u16 a, u16 b) { add16<DType::BFloat16>(a, b); }
+// template <DType dtype> __device__ __forceinline__ u16 add16(u16 x, u16 y)
+// {
+//     using T = CudaType<dtype>::Type;
+//     T x_ = std::bit_cast<T>(x);
+//     T y_ = std::bit_cast<T>(y);
+//     T ans = x_ + y_;
+//     return std::bit_cast<u16>(ans);
+// }
+
+// template <DType dtype> __device__ __forceinline__ u16 sub16(u16 x, u16 y)
+// {
+//     using T = CudaType<dtype>::Type;
+//     T x_ = std::bit_cast<T>(x);
+//     T y_ = std::bit_cast<T>(y);
+//     T ans = x_ - y_;
+//     return std::bit_cast<u16>(ans);
+// }
+
+// __device__ void testfn(u16 a, u16 b) { add16<DType::BFloat16>(a, b); }
 
 // Build bit patterns for ±1/4 in f16/bf16. This is the scale factor for a 4-axis
 // Hadamard: (1/sqrt(2))^4 = 0.25. Using constants here avoids extra FP ops.
@@ -213,41 +225,60 @@ __device__ __forceinline__ auto store_offsets_aligned(u16* base, array<u16, N> d
 }
 // ------------------------- Fragment view (Frag) -----------------------------
 //
-// DOC OF FRAG OUTDATED
-///
-// Frag<N,P,dtype> is a tiny logical view over the 128-element (N=7) warp tile,
-// distributed across lanes as imposed by the MMA instruction. Each lane owns
-// 2^(N-5) scalars (for N=7, that's 4 scalars).
+// a nd array of shape 2x2x...x2, sharded across a warp
 //
-// You can think of it as:
-// - get_lane_offset(): which base element this lane starts from (based on the
-//   lower 5 logical axes of P).
-// - get_local_offsets(): the 2^(N-5) “local” increments for the remaining axes.
+// each u16 has a lane index `l` and a data array index `i`
 //
-// IMPORTANT: Both lane and local offsets are computed with the SAME permutation P.
-// This keeps the logical axes coherent even when the hardware shuffles bits.
+// l0, the least sig bit of l, represent the logical index on logical axis P[0]
+// l1, represent the logical index on logical axis P[1]
+// etc
 //
-// Usage:
-// - load(ptr, lane): read this lane’s 4 scalars from memory into registers
-//   (no reordering; just a fixed pattern).
-// - store(ptr, lane): write them back in the same logical coordinate system.
+// i0, the least sig bit of i, represent the logical index on logical axis P[5]
+// i1, represent the logical index on logical axis P[6]
+// etc
 //
-// Frag has value semantics. It is used to represent in-register data. it does not make
-// sense to create a Frag on shared or global memory.
 template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
     array<u16, 1 << (N - 5)> data;
 
     static constexpr auto perm() -> Perm<N> { return P; }
 
-    // Sum strides of the 5 lane-controlled bits present in this lane ID.
-    __device__ static auto get_lane_offset(array<int, N> strides, int lane) -> int
+    constexpr static auto get_lane_offset_impl(array<int, N> strides, int lane) -> int
     {
         int ans = 0;
-#pragma unroll
         for (int i = 0; i < 5; i++)
             if (lane & (1 << i))
                 ans += strides[P[i]];
         return ans;
+    }
+
+    constexpr static auto is_linear_lane_offset(array<int, N> strides) -> bool
+    {
+        int base = get_lane_offset_impl(strides, 0);
+        int factor = get_lane_offset_impl(strides, 1) - base;
+        for (int i = 0; i < 32; i++) {
+            if (get_lane_offset_impl(strides, i) != base + factor * i) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Sum strides of the 5 lane-controlled bits present in this lane ID.
+    template <array<int, N> strides>
+    __device__ __forceinline__ static auto get_lane_offset(int lane) -> int
+    {
+        assert_((0 <= lane) && (lane < 32));
+
+        if constexpr (is_linear_lane_offset(strides)) {
+            // fast path
+            constexpr int base = get_lane_offset_impl(strides, 0);
+            constexpr int factor = get_lane_offset_impl(strides, 1) - base;
+
+            return base + factor * lane;
+
+        } else {
+            return get_lane_offset_impl(strides, lane);
+        }
     }
 
     // transpose layout without changing logical array content
@@ -309,7 +340,7 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
     template <array<int, N> strides = default_strides<N>()>
     __device__ static auto load(const u16* ptr, int lane) -> Frag<dtype, N, P>
     {
-        ptr += get_lane_offset(strides, lane);
+        ptr += get_lane_offset<strides>(lane);
         constexpr auto offsets = get_local_offsets(strides);
 
         array<u16, 1 << (N - 5)> ans = load_offsets_aligned<offsets.size(), offsets>(ptr);
@@ -320,7 +351,7 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
     template <array<int, N> strides = default_strides<N>()>
     __device__ auto store(u16* ptr, int lane) const -> void
     {
-        ptr += get_lane_offset(strides, lane);
+        ptr += get_lane_offset<strides>(lane);
         constexpr auto offsets = get_local_offsets(strides);
 
         store_offsets_aligned<offsets.size(), offsets>(ptr, data);
@@ -588,14 +619,51 @@ __device__ auto hada_local_8_8(const Frag<dtype, 8> frag, int lane) -> Frag<dtyp
 
 /////////////////////////////////////////////////
 
+// load M * 256 element from global in to shared out
+// every 256 consecutive element will be hadamard transformed
+template <
+    DType dtype,
+    int N,
+    int P // # of cp.async pipeline at once
+    // array<int, N> sm_strides // layout in shared mem
+>
+__device__ auto load_rot_8(const u16* in, u16* out, int lane) -> void
+{
+    static_for<N + P>([&]<int I>() {
+        if constexpr (I < N) {
+            cp_async16(out + I * (256 + 8) + lane * 8, in + I * 256 + lane * 8);
+            async_commit_group();
+        }
+
+        if constexpr (P <= I) {
+            constexpr int idx = I - P;
+            constexpr int ongoing = std::min(I + 1, N);
+
+            async_wait_pending<ongoing - idx - 1>();
+            __syncwarp();
+
+            u16* data = out + idx * (256 + 8);
+
+            auto in_reg = Frag<
+                dtype,
+                8,
+                Perm<8>{1, 2, 3, 4, 5, 0 /*u16->u32 packing axis*/, 6, 7}
+            >::load(data, lane);
+            auto out_reg = apply_on_local_prefix<8>(in_reg, hada_local_8_8<dtype>, lane);
+            out_reg.store(data, lane);
+        }
+    });
+}
+
+/////////////////////////////////////////////////
+
 template <DType dtype, int N> struct RowHandler {};
 
 template <DType dtype> struct RowHandler<dtype, 8> {
     __device__ auto handle_row(const u16* in, u16* out) -> void
     {
         int lane = threadIdx.x;
-        assert_(0 <= lane);
-        assert_(lane < 32);
+        assert_((0 <= lane) && (lane < 32));
 
         auto in_reg = Frag<
             dtype,
@@ -616,22 +684,79 @@ template <DType dtype> struct RowHandler<dtype, 8> {
 
         auto out_reg = apply_on_local_prefix<8>(in_reg, hada_local_8_8<dtype>, lane);
 
-        // __syncwarp();
         out_reg.store(out, lane);
     }
 };
 
-template <DType dtype, int N>
+template <DType dtype> struct RowHandler<dtype, 16> {
+    __device__ auto handle_row(const u16* in, u16* out) -> void
+    {
+        int lane = threadIdx.x;
+        assert_((0 <= lane) && (lane < 32));
+
+        constexpr int S = 256 + 8;
+
+        __shared__ u16 sm[S * 16];
+
+        load_rot_8<dtype, 16, 3>(in, sm, lane);
+
+        __syncwarp();
+
+        for (int i = 0; i < 4; i++) {
+            u16* base = sm + S * 4 * i;
+
+            constexpr array<int, 8> strides = {1, 2, 4, 8, S, S * 2, S * 4, S * 8};
+
+            // axis 4, 5, 6, 7 needs rotation
+            // -> need to be in position 0, 1, 5, 6
+            auto in_reg = Frag<
+                dtype,
+                8,
+                Perm<
+                    8
+                >{4 /*0*/,
+                  5 /*1*/,
+                  1,
+                  2,
+                  3,
+                  6 /*5*/,
+                  7 /*6*/,
+                  0 /*u16->u32 packing axis*/}
+            >::load<strides>(base, lane);
+
+            Frag<dtype, 8, Perm<8>{2, 3, 6, 4, 5, 1, 7, 0}> out_reg =
+                apply_on_local_prefix<7>(in_reg, rotate_4<dtype>, lane);
+
+            out_reg.store<strides>(base, lane);
+        }
+    }
+};
+
+template <
+    DType dtype,
+    int N, // had dimension is 2**N
+    int R
+>
 __global__ auto hadamard_transform_ker(const u16* a, u16* out, int num_rows) -> void
 {
     RowHandler<dtype, N> handler{};
 
-    for (int i = blockIdx.x; i < num_rows; i += gridDim.x) {
+#pragma unroll
+    for (int j = 0; j < R; j++) {
+        int i = blockIdx.x * R + j;
+
         const u16* a_i = a + i * (1 << N);
         u16* out_i = out + i * (1 << N);
 
         handler.handle_row(a_i, out_i);
     }
+
+    // for (int i = blockIdx.x; i < num_rows; i += gridDim.x) {
+    //     const u16* a_i = a + i * (1 << N);
+    //     u16* out_i = out + i * (1 << N);
+
+    //     handler.handle_row(a_i, out_i);
+    // }
 }
 
 template <torch::ScalarType dtype>
@@ -647,7 +772,10 @@ auto run_fht(
 
     const uint32_t num_rows = numel / 256;
 
-    hadamard_transform_ker<dtype, 8><<<48 * 4, 32, 0, stream>>>(
+    constexpr int R = 4;
+    TORCH_CHECK(num_rows % R == 0);
+
+    hadamard_transform_ker<dtype, 8, R><<<num_rows / R, 32, 0, stream>>>(
         static_cast<const u16*>(a_mat_ptr),
         static_cast<u16*>(out_ptr),
         static_cast<int>(num_rows)
