@@ -2,6 +2,9 @@
 #include <cuda_runtime.h>
 #include <mma.h>
 
+using u16 = uint16_t;
+using u32 = uint32_t;
+
 __device__ __forceinline__ void async_commit_group()
 {
     asm volatile("cp.async.commit_group;\n" ::);
@@ -24,4 +27,10 @@ __device__ inline void cp_async16(void* smem_ptr, const void* glob_ptr)
         "l"(glob_ptr),
         "n"(BYTES)
     );
+}
+
+// copy 16 bytes
+__device__ __forceinline__ void cp_16(void* dst, const void* src)
+{
+    *reinterpret_cast<float4*>(dst) = *reinterpret_cast<const float4*>(src);
 }

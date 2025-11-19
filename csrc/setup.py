@@ -29,7 +29,7 @@ setup(
                 "nvcc": [
                     "-O3",
                     "-std=c++20",
-                    "-lineinfo",
+                    # "-lineinfo",
                     "--ptxas-options=--warn-on-local-memory-usage",
                     "--ptxas-options=--warn-on-spills",
                     # c++20 on torch:

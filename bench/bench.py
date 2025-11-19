@@ -125,7 +125,7 @@ def _bench_many(fn: Callable[[], None], iters: int, warmup: int = 3) -> dict[str
 
 # hadamard sizes
 # test_sizes_m = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
-test_sizes_m = [256]
+test_sizes_m = [256, 4096]
 
 # test_elem_counts = [1 << i for i in range(9, 26, 1)]  # 32MB # 64MB # 2**28 = 256M
 test_elem_counts = [1 << i for i in range(12, 26, 1)]  # 32MB # 64MB # 2**28 = 256M
@@ -136,7 +136,7 @@ class TestConfig:
     """Configuration for the test suite."""
 
     check: bool = False
-    runs_per_size: int = 1000
+    runs_per_size: int = 100
     json_output_file: str | None = f"benchmark_{datetime.now():%Y-%m-%d_%H-%M-%S}.json"
 
     benchmark_cases: list[str] = field(default_factory=lambda: list(CASES.keys()))
