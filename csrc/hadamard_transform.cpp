@@ -1,4 +1,4 @@
-#include "defs.h"
+#include "defs.cuh"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <pybind11/pybind11.h>

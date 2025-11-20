@@ -23,9 +23,10 @@ setup(
                 "cxx": ["-O3"],
                 "nvcc": [
                     "-O3",
-                    "-lineinfo",
+                    # "-lineinfo",
                     '--ptxas-options=--warn-on-local-memory-usage',
                     '--ptxas-options=--warn-on-spills',
+                    "--keep",
                 ] + versions
             }
         ),

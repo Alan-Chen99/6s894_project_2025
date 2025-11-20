@@ -136,7 +136,7 @@ class TestConfig:
     """Configuration for the test suite."""
 
     check: bool = False
-    runs_per_size: int = 200
+    runs_per_size: int = 20
     json_output_file: str | None = f"benchmark_{datetime.now():%Y-%m-%d_%H-%M-%S}.json"
 
     benchmark_cases: list[str] = field(default_factory=lambda: list(CASES.keys()))
