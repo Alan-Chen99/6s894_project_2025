@@ -20,6 +20,7 @@ setup(
                 "hadamard_transform.cpp",
                 # "hadamard_transform_cuda.cu",
                 "main.cu",
+                "test_frag.cu",
             ],
             extra_compile_args={
                 "cxx": [

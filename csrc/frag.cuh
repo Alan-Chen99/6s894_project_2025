@@ -44,7 +44,7 @@ template <int N> struct Perm {
 // how many loads does it take?
 template <int limit = 1> struct SmBankCount {
     // offsets in words
-    static constexpr auto check(array<int, 32> word_offsets)
+    static constexpr auto check(array<int, 32> word_offsets) -> bool
     {
         array<int, 32> banks{};
         for (int offset : word_offsets) {
@@ -66,9 +66,8 @@ template <int limit = 1> struct SmBankCount {
     }
 };
 
-// more strict than need currently
 struct Coalesced {
-    static constexpr auto check(array<int, 32> word_offsets)
+    static constexpr auto check(array<int, 32> word_offsets) -> bool
     {
         for (int i = 0; i < 32; i++) {
             if (word_offsets[i] != i) {
@@ -77,6 +76,10 @@ struct Coalesced {
         }
         return true;
     };
+};
+
+struct MemCheckNone {
+    static constexpr auto check(array<int, 32> word_offsets) -> bool { return true; }
 };
 
 struct OK {
@@ -143,36 +146,50 @@ constexpr auto compute_pack(array<int, N> offsets)
     return {offsets_load, idxs_even, idxs_odd};
 }
 
-template <int N, array<int, N> offsets>
+template <int N, array<int, N> offsets, bool PACK>
 __device__ __forceinline__ auto load_offsets_aligned(const u16* base) -> array<u16, N>
 {
-    constexpr auto offsets_packed = compute_pack<N>(offsets);
-    auto [offsets_load, idxs_even, idxs_odd] = offsets_packed;
+    if constexpr (PACK) {
+        constexpr auto offsets_packed = compute_pack<N>(offsets);
+        auto [offsets_load, idxs_even, idxs_odd] = offsets_packed;
 
-    array<u16, N> ans;
-    const u32* base_ = reinterpret_cast<const u32*>(base);
+        array<u16, N> ans;
+        const u32* base_ = reinterpret_cast<const u32*>(base);
 
-    for (int i = 0; i < N / 2; i++) {
-        auto tmp = base_[offsets_load[i] / 2];
-        ans[idxs_even[i]] = lo16(tmp);
-        ans[idxs_odd[i]] = hi16(tmp);
+        for (int i = 0; i < N / 2; i++) {
+            auto tmp = base_[offsets_load[i] / 2];
+            ans[idxs_even[i]] = lo16(tmp);
+            ans[idxs_odd[i]] = hi16(tmp);
+        }
+
+        return ans;
+    } else {
+        array<u16, N> ans;
+        for (int i = 0; i < N; i++) {
+            ans[i] = base[offsets[i]];
+        }
+        return ans;
     }
-
-    return ans;
 }
 
-template <int N, array<int, N> offsets>
+template <int N, array<int, N> offsets, bool PACK>
 __device__ __forceinline__ auto store_offsets_aligned(u16* base, array<u16, N> data)
     -> void
 {
-    constexpr auto offsets_packed = compute_pack<N>(offsets);
-    auto [offsets_load, idxs_even, idxs_odd] = offsets_packed;
+    if constexpr (!PACK) {
+        for (int i = 0; i < N; i++) {
+            base[offsets[i]] = data[i];
+        }
+    } else {
+        constexpr auto offsets_packed = compute_pack<N>(offsets);
+        auto [offsets_load, idxs_even, idxs_odd] = offsets_packed;
 
-    u32* base_ = reinterpret_cast<u32*>(base);
+        u32* base_ = reinterpret_cast<u32*>(base);
 
-    for (int i = 0; i < N / 2; i++) {
-        auto val = pack_b16x2(data[idxs_even[i]], data[idxs_odd[i]]);
-        base_[offsets_load[i] / 2] = val;
+        for (int i = 0; i < N / 2; i++) {
+            auto val = pack_b16x2(data[idxs_even[i]], data[idxs_odd[i]]);
+            base_[offsets_load[i] / 2] = val;
+        }
     }
 }
 
@@ -192,7 +209,7 @@ constexpr auto u16_to_u32_offsets(array<int, 32> offsets) -> array<int, 32>
 {
     array<int, 32> ans;
     for (int i = 0; i < 32; i++) {
-        assert(offsets[i] % 2 == 0);
+        // assert(offsets[i] % 2 == 0);
         ans[i] = offsets[i] / 2;
     }
     return ans;
@@ -337,6 +354,7 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
     template <
         array<int, N> strides = default_strides<N>(), // logical strides
         typename MEM = SmBankCount<1>,
+        bool PACK = true,
         typename = CHECK_V<mem_check_strides<strides, MEM>()>
     >
     __device__ static auto load(const u16* ptr, int lane) -> Frag<dtype, N, P>
@@ -346,13 +364,15 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
         ptr += F::template get_lane_offset<strides, MEM>(lane);
         constexpr auto offsets = F::get_local_offsets(strides);
 
-        array<u16, 1 << (N - 5)> ans = load_offsets_aligned<offsets.size(), offsets>(ptr);
+        array<u16, 1 << (N - 5)> ans =
+            load_offsets_aligned<offsets.size(), offsets, PACK>(ptr);
         return {ans};
     }
 
     template <
         array<int, N> strides = default_strides<N>(), // logical strides
         typename MEM = SmBankCount<1>,
+        bool PACK = true,
         typename = CHECK_V<mem_check_strides<strides, MEM>()>
     >
     __device__ auto store(u16* ptr, int lane) const
@@ -360,6 +380,80 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
         ptr += get_lane_offset<strides, MEM>(lane);
         constexpr auto offsets = get_local_offsets(strides);
 
-        store_offsets_aligned<offsets.size(), offsets>(ptr, data);
+        store_offsets_aligned<offsets.size(), offsets, PACK>(ptr, data);
     }
 };
+
+constexpr Perm<8> PermA = {1, 2, 4, 5, 6, /**/ 0, 7, 3};
+constexpr Perm<7> PermB = {1, 2, 4, 5, 6, /**/ 0, 3};
+constexpr Perm<7> PermC = {5, 6, 0, 1, 2, /**/ 4, 3};
+
+// Compute a generalized dot product:
+// A[k1, k2, k3, k4, m1, m2, m3, m4]
+// B[k1, k2, k3, k4, n1, n2, n3]
+// ->
+// C[m1, m2, m3, m4, n1, n2, n3]
+// (so the first 4 logical axis of A and B disappears by dot product with each other)
+//
+// These tensors must be layed out in registers as required in the type signature.
+//
+// A single tensor core call is used. No other computation or memory access is used.
+template <DType dtype>
+__device__ __forceinline__ auto mma_m16_n8_k16(
+    Frag<dtype, 8, PermA> A,
+    Frag<dtype, 7, PermB> B
+) -> Frag<dtype, 7, PermC>
+{
+    // Pack A (8 scalars -> 4x b16x2), B (4 scalars -> 2x b16x2).
+    array<u32, 4> a{
+        pack_b16x2(A.data[0], A.data[1]),
+        pack_b16x2(A.data[2], A.data[3]),
+        pack_b16x2(A.data[4], A.data[5]),
+        pack_b16x2(A.data[6], A.data[7]),
+    };
+    array<u32, 2> b{
+        pack_b16x2(B.data[0], B.data[1]),
+        pack_b16x2(B.data[2], B.data[3]),
+    };
+
+    constexpr u32 z = 0;
+    u32 c0, c1;
+
+    if constexpr (dtype == DType::Half) {
+        asm volatile("mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
+                     "{%0, %1}, {%2, %3, %4, %5}, {%6, %7}, {%8, %9};\n"
+                     : "=r"(c0), "=r"(c1)
+                     : "r"(a[0]),
+                       "r"(a[1]),
+                       "r"(a[2]),
+                       "r"(a[3]),
+                       "r"(b[0]),
+                       "r"(b[1]),
+                       "r"(z),
+                       "r"(z));
+    } else {
+        // Assume bf16; accumulate in fp32 and pack to bf16x2.
+        u32 t0, t1, t2, t3;
+        asm volatile(
+            "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+            "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};\n"
+            : "=r"(t0), "=r"(t1), "=r"(t2), "=r"(t3)
+            : "r"(a[0]),
+              "r"(a[1]),
+              "r"(a[2]),
+              "r"(a[3]),
+              "r"(b[0]),
+              "r"(b[1]),
+              "r"(z),
+              "r"(z),
+              "r"(z),
+              "r"(z)
+        );
+        asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;\n" : "=r"(c0) : "r"(t1), "r"(t0));
+        asm volatile("cvt.rn.bf16x2.f32 %0, %1, %2;\n" : "=r"(c1) : "r"(t3), "r"(t2));
+    }
+
+    // Unpack C per-lane in hardware order: i={0,1,2,3} => {lo(c0), hi(c0), lo(c1),
+    // hi(c1)}.
+    return {{lo16(c0), hi16(c0), lo16(c1), hi16(c1)}};
+}

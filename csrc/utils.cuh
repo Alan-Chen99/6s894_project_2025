@@ -16,7 +16,7 @@ using DType = torch::ScalarType;
 
 ////////////////////////////////////////
 
-__host__ __device__ void assume(bool cond)
+__host__ __device__ __forceinline__ void assume(bool cond)
 {
 #if defined(__CUDA_ARCH__)
     __builtin_assume(cond);
