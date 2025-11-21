@@ -113,3 +113,26 @@ template <std::size_t N, typename F> __device__ void static_for(F&& f)
 // }
 
 // __device__ void testfn(u16 a, u16 b) { add16<DType::BFloat16>(a, b); }
+
+// BlackBox is a clangd trick that otherwise does nothing.
+//
+// we wanted clangd to show full permutations on hover.
+// sometimes ShowAKA config still dont work, so we use this hack
+// clangd hover:
+//
+// no black box
+// Type: OutType (aka Frag<8, Perm<8>{{{1, 0, 2, 3, 4, 5, 6, 7}}} + out_perm,
+// (c10::ScalarType)'\x05'>)
+//
+// with black box
+// Type: BlackBox<OutType> (aka Frag<8, Perm<8>{{{3, 4, 5, 1, 0, 2, 6, 7}}},
+// c10::ScalarType::Half>)
+//
+// afaik showing full type through a error always works:
+// Dummy<decltype(ans)>::x x;
+// No type named ’x’ in ’Dummy<Frag<8, Perm<8>{{{3, 4, 5, 1, 0, 2, 6, 7}}},
+// c10::ScalarType::Half>>’ [typename_nested_not_found]
+template <typename T> struct BlackBox_ {
+    using Type = T;
+};
+template <typename T> using BlackBox = BlackBox_<T>::Type;

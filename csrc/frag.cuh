@@ -23,8 +23,17 @@ template <int N> struct Perm {
     constexpr auto size() -> int { return ord.size(); }
     constexpr auto operator[](int idx) const -> int { return ord[idx]; }
 
+    constexpr auto inv() const -> Perm<N>
+    {
+        Perm<N> ans;
+        for (int i = 0; i < N; i++) {
+            ans.ord[ord[i]] = i;
+        }
+        return ans;
+    }
+
     // adding represent a added premutation to a fragment
-    // a function will have signature of this form:
+    // a function that commutes with transposes will have signature of this form:
     //
     // template<Perm> auto func(Frag<Perm>) -> Frag<Perm + {2, 1, 0}>
     template <int M>
@@ -232,7 +241,36 @@ constexpr auto u16_to_u32_offsets(array<int, 32> offsets) -> array<int, 32>
 template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
     array<u16, 1 << (N - 5)> data;
 
+    static constexpr int N_ = N;
+    static constexpr Perm<N> P_ = P;
+    static constexpr DType dtype_ = dtype;
+
     static constexpr auto perm() -> Perm<N> { return P; }
+
+    // element_fn: function array<bool, N> -> u16
+    //
+    // [LLM] Construct a fragment by evaluating `element_fn` on every logical index
+    // [LLM] element_fn: array<bool, N> -> u16. The first 5 axes are sourced from `lane`
+    // [LLM] via P[0..4], and the remaining local axes from the per-thread index i via
+    // P[5..N-1].
+    static constexpr auto create(int lane, auto element_fn) -> Frag<dtype, N, P>
+    {
+        Frag<dtype, N, P> out{};
+
+        array<bool, N> base{};
+        for (int b = 0; b < 5; ++b)
+            base[P[b]] = (lane >> b) & 1;
+
+        constexpr int L = 1 << (N - 5);
+        for (int i = 0; i < L; ++i) {
+            auto idx = base;
+            for (int k = 0; k < (N - 5); ++k)
+                idx[P[5 + k]] = (i >> k) & 1;
+
+            out.data[i] = element_fn(idx);
+        }
+        return out;
+    }
 
     // suppose the frag is in memory.
     //   strides: stride of logical axis
@@ -388,16 +426,22 @@ constexpr Perm<8> PermA = {1, 2, 4, 5, 6, /**/ 0, 7, 3};
 constexpr Perm<7> PermB = {1, 2, 4, 5, 6, /**/ 0, 3};
 constexpr Perm<7> PermC = {5, 6, 0, 1, 2, /**/ 4, 3};
 
+// <logical behavior>
 // Compute a generalized dot product:
 // A[k1, k2, k3, k4, m1, m2, m3, m4]
 // B[k1, k2, k3, k4, n1, n2, n3]
 // ->
 // C[m1, m2, m3, m4, n1, n2, n3]
 // (so the first 4 logical axis of A and B disappears by dot product with each other)
-//
+// <logical description>
 // These tensors must be layed out in registers as required in the type signature.
 //
 // A single tensor core call is used. No other computation or memory access is used.
+//
+// <physical behavior>
+// Applies a tensor core mma,
+// labeling axis according to nvidia swizzle and therefore
+// delegating swizzling to the caller
 template <DType dtype>
 __device__ __forceinline__ auto mma_m16_n8_k16(
     Frag<dtype, 8, PermA> A,
@@ -456,4 +500,64 @@ __device__ __forceinline__ auto mma_m16_n8_k16(
     // Unpack C per-lane in hardware order: i={0,1,2,3} => {lo(c0), hi(c0), lo(c1),
     // hi(c1)}.
     return {{lo16(c0), hi16(c0), lo16(c1), hi16(c1)}};
+}
+
+// <logical behavior>
+// call a function with a different perm spec by
+//   transposing, apply function, then transposing back
+//
+// args:
+//   fn: function(Frag<Perm<N> P_fn>) -> Frag<Perm<N> any>
+//   arr: Frag<Perm<M> P_arr>
+//
+// returns:
+//   T_inv(fn(T(arr)))
+//
+//  T is logical transpose that does no physical work:
+//   T[logical axis mapping]:= (P_fn[0] -> P_arr[0], P_fn[1] -> P_arr[1], ...)
+//
+// if N is larger M, this function extends fn:
+// the rest of the dimensions are batch dims.
+//
+// <physical behavior>
+//
+// fn is a function with the wrong axis ordering.
+// we apply it to argument arr anyways pretending it is right,
+// and give a reasonable output axis labeling.
+//
+template <int N, Perm<N> P_fn = Perm<N>::ID(), int M, Perm<M> P_arr, DType dtype>
+__host__ __device__ __forceinline__ constexpr auto apply_transposed(
+    Frag<dtype, M, P_arr> arr,
+    auto fn
+)
+{
+    static_assert(N <= M);
+
+    using ArgT = Frag<dtype, N, P_fn>;
+
+    constexpr Perm<N> P_fn_out = decltype(fn(std::declval<ArgT>()))::perm();
+    constexpr Perm<M> out_perm = P_arr + P_fn.inv() + P_fn_out;
+
+    constexpr int D = 1 << (M - N); // batch dimensions
+    constexpr int S = 1 << (N - 5); // #count of u16
+    static_assert(arr.data.size() == D * S);
+
+    using OutType = Frag<dtype, M, out_perm>;
+    OutType ans;
+
+    for (int i = 0; i < D; i++) {
+        ArgT sub_mat;
+
+        for (int j = 0; j < S; j++) {
+            sub_mat.data[j] = arr.data[S * i + j];
+        }
+
+        Frag<dtype, N, P_fn_out> res = fn(sub_mat);
+
+        for (int j = 0; j < S; j++) {
+            ans.data[S * i + j] = res.data[j];
+        }
+    }
+
+    return ans;
 }
