@@ -31,8 +31,9 @@ __host__ __device__ __forceinline__ void assume(bool cond)
         assume(_cond_eval); \
     } while (0)
 
-template <typename T>
-__host__ __device__ __forceinline__ T* assume_aligned_ptr(T* p, size_t align)
+// TODO: seems to generate extra asm and does nothing better
+template <int align, typename T>
+__host__ __device__ __forceinline__ T* assume_aligned_ptr(T* p)
 {
 #if defined(__CUDA_ARCH__)
     return reinterpret_cast<T*>(__builtin_assume_aligned(p, align));
@@ -45,7 +46,7 @@ __host__ __device__ __forceinline__ T* assume_aligned_ptr(T* p, size_t align)
 #define assert_aligned(PTR, ALIGN) \
     (assert((((size_t)(ALIGN)) & (((size_t)(ALIGN)) - 1)) == 0), /* power-of-two */ \
      assert((reinterpret_cast<uintptr_t>(PTR) & (((size_t)(ALIGN)) - 1)) == 0), \
-     assume_aligned_ptr((PTR), static_cast<size_t>(ALIGN)))
+     /* assume_aligned_ptr<ALIGN>(PTR) */ (PTR))
 
 template <typename T> struct Dummy {};
 template <auto T> struct Dummy2 {};
