@@ -59,9 +59,16 @@ __device__ auto load_rot_8(const u16* in, u16* sm, int lane) -> void
 
 /////////////////////////////////////////////////
 
+// log_elem_count =
+// each handle_row call process 1<<log_elem_count elements
+// contiguous elements; (longer than 1<<N is batch)
+//
+// rows_per_block = # of repetition of loop on kernel;
+
 template <DType dtype, int N> struct RowHandler;
 
 template <DType dtype> struct RowHandler<dtype, 8> {
+    static constexpr int log_elem_count = 8;
     static constexpr int rows_per_block = 4;
 
     __device__ auto handle_row(const u16* in, u16* out) -> void
@@ -94,7 +101,10 @@ template <DType dtype> struct RowHandler<dtype, 8> {
     }
 };
 
-template <DType dtype> struct RowHandler<dtype, 12> {
+template <DType dtype, int N>
+    requires(8 < N && N <= 12)
+struct RowHandler<dtype, N> {
+    static constexpr int log_elem_count = 12;
     static constexpr int rows_per_block = 1;
 
     __device__ auto handle_row(const u16* in, u16* out) -> void
@@ -116,16 +126,23 @@ template <DType dtype> struct RowHandler<dtype, 12> {
 
             constexpr array<int, 8> strides = {1, 2, 4, 8, S, S * 2, S * 4, S * 8};
 
+            // N=12 => axis 4, 5, 6, 7 needs rotation
+            // N=(8, 12] => prefix of that
+            constexpr array<AxSpec, 8> spec = []() consteval {
+                array<AxSpec, 8> spec = repeat_to_array<8>(AxSpec::Id);
+                for (int i = 4; i < N - 4; i++) {
+                    spec[i] = AxSpec::Rot;
+                }
+                return spec;
+            }();
+
             // axis 4, 5, 6, 7 needs rotation
             // -> need to be in position 0, 1, 5, 6
             auto in_reg = Frag<
                 dtype,
                 8,
                 AxSpec,
-                array_concat(
-                    repeat_to_array<4>(AxSpec::Id),
-                    repeat_to_array<4>(AxSpec::Rot)
-                ),
+                spec,
                 Perm<8>{
                     6 /*0*/,
                     5 /*1*/,
@@ -161,48 +178,44 @@ template <DType dtype> struct RowHandler<dtype, 12> {
 
 // had dimension is 2**N
 template <DType dtype, int N>
-__global__ auto hadamard_transform_ker(const u16* a, u16* out, int num_rows) -> void
+__global__ auto hadamard_transform_ker(const u16* a, u16* out) -> void
 {
     RowHandler<dtype, N> handler{};
 
     constexpr int R = handler.rows_per_block;
+    constexpr int S = handler.log_elem_count;
+
+    constexpr int elem_per_block = (1 << S) * R;
+
+    // start pointers of what this block handles
+    const u16* in_base = a + blockIdx.x * elem_per_block;
+    u16* out_base = out + blockIdx.x * elem_per_block;
 
 #pragma unroll
-    for (int j = 0; j < R; j++) {
-        int i = blockIdx.x * R + j;
+    for (int i = 0; i < R; i++) {
 
-        const u16* a_i = a + i * (1 << N);
-        u16* out_i = out + i * (1 << N);
+        const u16* a_i = in_base + i * (1 << S);
+        u16* out_i = out_base + i * (1 << S);
 
         handler.handle_row(a_i, out_i);
     }
-
-    // for (int i = blockIdx.x; i < num_rows; i += gridDim.x) {
-    //     const u16* a_i = a + i * (1 << N);
-    //     u16* out_i = out + i * (1 << N);
-
-    //     handler.handle_row(a_i, out_i);
-    // }
 }
 
 template <torch::ScalarType dtype, int N>
-auto run_fht_helper(
-    void* a_mat_ptr,
-    void* out_ptr,
-    uint32_t num_rows,
-    cudaStream_t stream
-) -> void
+auto run_fht_helper(void* a_mat_ptr, void* out_ptr, uint32_t numel, cudaStream_t stream)
+    -> void
 {
     RowHandler<dtype, N> handler{};
 
-    TORCH_CHECK(num_rows % handler.rows_per_block == 0);
+    // # of elements to process in one block
+    constexpr int elem_per_block = (1 << handler.log_elem_count) * handler.rows_per_block;
 
-    hadamard_transform_ker<dtype, N>
-        <<<num_rows / handler.rows_per_block, 32, 0, stream>>>(
-            static_cast<const u16*>(a_mat_ptr),
-            static_cast<u16*>(out_ptr),
-            num_rows
-        );
+    TORCH_CHECK(numel % elem_per_block == 0);
+
+    hadamard_transform_ker<dtype, N><<<numel / elem_per_block, 32, 0, stream>>>(
+        static_cast<const u16*>(a_mat_ptr),
+        static_cast<u16*>(out_ptr)
+    );
 }
 
 template <torch::ScalarType dtype>
@@ -217,17 +230,30 @@ auto run_fht(
     // TORCH_CHECK(had_size == 256, "This implementation only supports Hadamard size
     // 256");
 
-    TORCH_CHECK(numel % had_size == 0);
-    int num_rows = numel / had_size;
+    // TORCH_CHECK(numel % had_size == 0);
+    // int num_rows = numel / had_size;
 
     // constexpr int R = 4;
     // TORCH_CHECK(num_rows % R == 0);
 
-    if (had_size == 256) {
-        run_fht_helper<dtype, 8>(a_mat_ptr, out_ptr, num_rows, stream);
-    } else if (had_size == 4096) {
-        run_fht_helper<dtype, 12>(a_mat_ptr, out_ptr, num_rows, stream);
-    }
+    bool found = false;
+
+    static_for<13>([&]<int I>() {
+        if (had_size == (1 << I)) {
+
+            constexpr bool supported = (
+                //
+                I == 8 || (8 < I && I <= 12)
+            );
+
+            if constexpr (supported) {
+                found = true;
+                run_fht_helper<dtype, I>(a_mat_ptr, out_ptr, numel, stream);
+            }
+        }
+    });
+
+    TORCH_CHECK(found, "unsupported size");
 
     // TORCH_CHECK((numel % 256) == 0, "numel must be divisible by 256");
 
@@ -240,7 +266,7 @@ auto run_fht(
     //     static_cast<u16*>(out_ptr),
     //     static_cast<int>(num_rows)
     // );
-    // C10_CUDA_KERNEL_LAUNCH_CHECK();
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 // Explicit instantiations (fp16, bf16)
