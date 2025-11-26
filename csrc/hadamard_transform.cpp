@@ -1,4 +1,5 @@
 #include "defs.cuh"
+#include "main.cuh"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <pybind11/pybind11.h>
@@ -46,13 +47,7 @@ torch::Tensor hadamard_transform(at::Tensor& in, bool inplace)
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     if (dtype == torch::ScalarType::Half) {
-        run_fht<torch::ScalarType::Half>(
-            x.data_ptr(),
-            out.data_ptr(),
-            x.numel(),
-            had_size,
-            stream
-        );
+        run_fht<DType::Half>(x.data_ptr(), out.data_ptr(), x.numel(), had_size, stream);
     } else {
         // run_fht<torch::ScalarType::BFloat16>(
         //     x.data_ptr(),

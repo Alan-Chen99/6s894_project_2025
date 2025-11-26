@@ -152,7 +152,7 @@ template <
 __device__ auto hada_rot_8(Frag<dtype, N, AxSpec, spec, P> arr, int lane)
     -> Frag<dtype, N, AxSpec, hada_rot_8_axis(spec, P), P>
 {
-    return arr.template apply_transposed<N>([&](auto frag) {
+    return arr.template apply_transposed<8>([&](auto frag) {
         // {0, 0, 1, 1, 1, 0, 0, 1}, {3, 4, 5, 0, 1, 2, 6, 7}
         auto tmp1 = hada_rot_4(frag, lane);
 

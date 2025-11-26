@@ -1,10 +1,12 @@
 #pragma once
 
+#include "dtype.h"
 #include <array>
+#include <bit>
+#include <cassert>
 #include <cstdint>
 #include <cuda_runtime.h>
 #include <mma.h>
-#include <torch/extension.h>
 
 using u16 = uint16_t;
 using u32 = uint32_t;
@@ -12,7 +14,6 @@ using u32 = uint32_t;
 using std::array;
 using std::pair;
 using std::tuple;
-using DType = torch::ScalarType;
 
 ////////////////////////////////////////
 
@@ -30,8 +31,28 @@ __host__ __device__ __forceinline__ void assume(bool cond)
         assume(_cond_eval); \
     } while (0)
 
+template <typename T>
+__host__ __device__ __forceinline__ T* assume_aligned_ptr(T* p, size_t align)
+{
+#if defined(__CUDA_ARCH__)
+    return reinterpret_cast<T*>(__builtin_assume_aligned(p, align));
+#else
+    return p;
+#endif
+}
+
+// result needs to be written back to pointer to be effective
+#define assert_aligned(PTR, ALIGN) \
+    (assert((((size_t)(ALIGN)) & (((size_t)(ALIGN)) - 1)) == 0), /* power-of-two */ \
+     assert((reinterpret_cast<uintptr_t>(PTR) & (((size_t)(ALIGN)) - 1)) == 0), \
+     assume_aligned_ptr((PTR), static_cast<size_t>(ALIGN)))
+
 template <typename T> struct Dummy {};
 template <auto T> struct Dummy2 {};
+
+////////////////////////////////////////
+
+template <typename T> constexpr auto div_ceil(T x, T y) -> T { return (x + y - 1) / y; }
 
 ////////////////////////////////////////
 

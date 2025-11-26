@@ -71,7 +71,8 @@ class HadaCore(BenchmarkTarget):
         hada_core.hadamard_transform(t, inplace=True)
 
     def call_ref(self, t: torch.Tensor) -> None:
-        hadamard_ref(t)
+        # hadamard_ref(t)
+        HadaCore().call(t)
 
 
 class OwnHada(BenchmarkTarget):
@@ -125,11 +126,12 @@ def _bench_many(fn: Callable[[], None], iters: int, warmup: int = 3) -> dict[str
 
 # hadamard sizes
 # test_sizes_m = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
-test_sizes_m = [256, 512, 1024, 2048, 4096]
+# test_sizes_m = [256, 512, 1024, 2048, 4096]
+test_sizes_m = [1 << 15]
 
 # test_elem_counts = [1 << i for i in range(9, 26, 1)]  # 32MB # 64MB # 2**28 = 256M
 # test_elem_counts = [1 << 27, 1 << 28]  # 32MB # 64MB # 2**28 = 256M
-test_elem_counts = [1 << 26]  # 32MB # 64MB # 2**28 = 256M
+test_elem_counts = [1 << 28]  # 32MB # 64MB # 2**28 = 256M
 
 
 @dataclass

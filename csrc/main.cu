@@ -1,17 +1,14 @@
 // comment out to enable assert
 #define NDEBUG
 
-#include "defs.cuh"
 #include "frag.cuh"
 #include "hada.cuh"
+#include "main.cuh"
 #include "utils.cuh"
+#include <c10/cuda/CUDAException.h>
+#include <c10/util/Exception.h>
 #include <cstdint>
 #include <cstdio>
-#include <cuda_bf16.h>
-#include <cuda_fp16.h>
-#include <cuda_runtime.h>
-#include <mma.h>
-#include <torch/extension.h>
 
 /////////////////////////////////////////////////
 
@@ -20,16 +17,18 @@
 template <
     DType dtype,
     int N,
-    int P, // # of cp.async pipeline at once
-    int S
-    // array<int, N> sm_strides // layout in shared mem
+    int P,      // # of cp.async pipeline at once
+    int S1,     // first loading into shared
+    int S2 = S1 // stride writing back into shared
 >
 __device__ auto load_rot_8(const u16* in, u16* sm, int lane) -> void
 {
+    static_assert(S2 <= S1);
+
     static_for<N + P>([&]<int I>() {
         if constexpr (I < N) {
             cp_async16(
-                sm + I * S + lane * 8,  // shared: stride S
+                sm + I * S1 + lane * 8, // shared: stride S
                 in + I * 256 + lane * 8 // gobal: stride 256
             );
             async_commit_group();
@@ -42,7 +41,8 @@ __device__ auto load_rot_8(const u16* in, u16* sm, int lane) -> void
             async_wait_pending<ongoing - idx - 1>();
             __syncwarp();
 
-            u16* data = sm + idx * S;
+            u16* data_in = sm + idx * S1;
+            u16* data_out = sm + idx * S2;
 
             auto in_reg = Frag<
                 dtype,
@@ -50,9 +50,73 @@ __device__ auto load_rot_8(const u16* in, u16* sm, int lane) -> void
                 AxSpec,
                 repeat_to_array<8>(AxSpec::Rot),
                 Perm<8>{1, 2, 3, 4, 5, 0 /*u16->u32 packing axis*/, 6, 7}
-            >::load(data, lane);
+            >::load(data_in, lane);
             auto out_reg = hada_rot_8(in_reg, lane);
-            out_reg.store(data, lane);
+            out_reg.store(data_out, lane);
+        }
+    });
+}
+
+// rotate 0..9 except 3, 4
+template <
+    DType dtype,
+    int N,
+    int P // # of cp.async pipeline at once
+>
+__device__ auto load_rot_8_10(const u16* in, u16* sm, int lane) -> void
+{
+    static_for<N + P>([&]<int I>() {
+        if constexpr (I < N) {
+            // copy 1024 contiguous elements
+            for (int i = 0; i < 4; i++) {
+                int offset = I * 1024 + 256 * i + lane * 8;
+                cp_async16(sm + offset, in + offset);
+            }
+            async_commit_group();
+        }
+
+        if constexpr (P <= I) {
+            constexpr int idx = I - P;
+            constexpr int ongoing = std::min(I + 1, N);
+
+            async_wait_pending<ongoing - idx - 1>();
+            __syncwarp();
+
+            u16* data = sm + idx * 1024;
+
+            constexpr auto perm = Perm<10>{
+                1,
+                2,
+                5,
+                8,
+                9,
+                // local, assign one axis to pack to u32
+                0,
+                6,
+                7,
+                3,
+                4,
+            };
+
+            auto in_reg = Frag<
+                dtype,
+                10,
+                AxSpec,
+                repeat_to_array<10>(AxSpec::Rot),
+                perm
+            >::
+                template load<
+                    default_strides<10>(), //
+                    SmBankCount<4>
+                >(data, lane);
+
+            auto out_reg = hada_rot_8(in_reg, lane);
+
+            // Dummy<decltype(out_reg)>::x x;
+            out_reg.template store<
+                default_strides<10>(), //
+                SmBankCount<4>
+            >(data, lane);
         }
     });
 }
@@ -70,6 +134,8 @@ template <DType dtype, int N> struct RowHandler;
 template <DType dtype> struct RowHandler<dtype, 8> {
     static constexpr int log_elem_count = 8;
     static constexpr int rows_per_block = 4;
+
+    static constexpr int SM = 0;
 
     __device__ auto handle_row(const u16* in, u16* out) -> void
     {
@@ -106,6 +172,8 @@ template <DType dtype, int N>
 struct RowHandler<dtype, N> {
     static constexpr int log_elem_count = 12;
     static constexpr int rows_per_block = 1;
+
+    static constexpr int SM = 0;
 
     __device__ auto handle_row(const u16* in, u16* out) -> void
     {
@@ -176,9 +244,103 @@ struct RowHandler<dtype, N> {
     }
 };
 
+template <DType dtype, int N>
+// requires(12 < N && N <= 15)
+    requires(N == 15)
+struct RowHandler<dtype, N> {
+    static constexpr int log_elem_count = 15;
+    static constexpr int rows_per_block = 1;
+
+    static constexpr int SM = (1 << 15) * 2;
+
+    __device__ auto handle_row(const u16* in, u16* out) -> void
+    {
+        int lane = threadIdx.x;
+        assert_((0 <= lane) && (lane < 32));
+
+        extern __shared__ u16 sm[];
+
+        load_rot_8_10<dtype, 32, 3>(in, sm, lane);
+
+        __syncwarp();
+
+#pragma unroll
+        for (int i = 0; i < 32; i++) {
+            // 5..9
+            u16* base_in = sm + 32 * i;
+
+            u16* global_out = out + 32 * i;
+
+            constexpr array<int, 10> strides = {
+                1 << 0,  // 0: Id
+                1 << 1,  // 1: Id
+                1 << 2,  // 2: Id
+                1 << 3,  // 3:
+                1 << 4,  // 4:
+                1 << 10, // 10:
+                1 << 11, // 11:
+                1 << 12, // 12:
+                1 << 13, // 13:
+                1 << 14, // 14:
+            };
+
+            constexpr array<AxSpec, 10> spec = []() consteval {
+                array<AxSpec, 10> spec = repeat_to_array<10>(AxSpec::Id);
+                spec[3] = AxSpec::Rot;
+                spec[4] = AxSpec::Rot;
+
+                for (int i = 5; i < 10; i++) {
+                    spec[i] = AxSpec::Rot;
+                }
+                return spec;
+            }();
+
+            auto in_reg = Frag<
+                dtype,
+                10,
+                AxSpec,
+                spec,
+                Perm<10>{
+                    3,
+                    4,
+                    5,
+                    6,
+                    7,
+                    0, // packing
+                    8,
+                    9,
+                    1,
+                    2,
+                }
+            >::template load<strides, SmBankCount<2>, 8>(base_in, lane);
+
+            auto out_reg = hada_rot_8(in_reg, lane);
+            // Dummy<decltype(out_reg)>::x x;
+
+            constexpr array<int, 10> strides_out = {
+                1 << 0,
+                1 << 1,
+                1 << 2,
+                1 << 3,
+                1 << 4,
+                1 << 10, // 10:
+                1 << 11, // 11:
+                1 << 12, // 12:
+                1 << 13, // 13:
+                1 << 14, // 14:
+            };
+
+            out_reg.template store<strides_out, SmBankCount<2>, 8>(global_out, lane);
+        }
+    }
+};
+
+template struct RowHandler<DType::Half, 15>;
+
 // had dimension is 2**N
 template <DType dtype, int N>
-__global__ auto hadamard_transform_ker(const u16* a, u16* out) -> void
+__global__ __launch_bounds__(32) auto hadamard_transform_ker(const u16* a, u16* out)
+    -> void
 {
     RowHandler<dtype, N> handler{};
 
@@ -201,7 +363,7 @@ __global__ auto hadamard_transform_ker(const u16* a, u16* out) -> void
     }
 }
 
-template <torch::ScalarType dtype, int N>
+template <DType dtype, int N>
 auto run_fht_helper(void* a_mat_ptr, void* out_ptr, uint32_t numel, cudaStream_t stream)
     -> void
 {
@@ -212,13 +374,18 @@ auto run_fht_helper(void* a_mat_ptr, void* out_ptr, uint32_t numel, cudaStream_t
 
     TORCH_CHECK(numel % elem_per_block == 0);
 
-    hadamard_transform_ker<dtype, N><<<numel / elem_per_block, 32, 0, stream>>>(
+    auto ker = hadamard_transform_ker<dtype, N>;
+    C10_CUDA_CHECK(
+        cudaFuncSetAttribute(ker, cudaFuncAttributeMaxDynamicSharedMemorySize, handler.SM)
+    );
+
+    ker<<<numel / elem_per_block, 32, handler.SM, stream>>>(
         static_cast<const u16*>(a_mat_ptr),
         static_cast<u16*>(out_ptr)
     );
 }
 
-template <torch::ScalarType dtype>
+template <DType dtype>
 auto run_fht(
     void* a_mat_ptr,
     void* out_ptr,
@@ -238,12 +405,13 @@ auto run_fht(
 
     bool found = false;
 
-    static_for<13>([&]<int I>() {
+    static_for<16>([&]<int I>() {
         if (had_size == (1 << I)) {
 
             constexpr bool supported = (
                 //
-                I == 8 || (8 < I && I <= 12)
+                // I == 8 || (8 < I && I <= 12) || (I == 15)
+                I == 8 || I == 12 || I == 15
             );
 
             if constexpr (supported) {
@@ -270,13 +438,14 @@ auto run_fht(
 }
 
 // Explicit instantiations (fp16, bf16)
-template auto run_fht<torch::ScalarType::Half>(
+template auto run_fht<DType::Half>(
     void* a_mat_ptr,
     void* out_ptr,
     uint32_t numel,
     uint32_t had_size,
     cudaStream_t stream
 ) -> void;
+
 // template auto run_fht<torch::ScalarType::BFloat16>(
 //     void* a_mat_ptr,
 //     void* out_ptr,

@@ -13,13 +13,13 @@ __global__ void test_mma_m16_n8_k16_ker(const u16* a, const u16* b, u16* c)
     auto a_frag = Frag<dtype, 8, NoMeta, array<NoMeta, 8>{}, PermA>::template load<
         array<int, 8>{1, 2, 4, 8, 16, 32, 64, 128}, // row major
         MemCheckNone,
-        false
+        1
     >(a, lane);
 
     auto b_frag = Frag<dtype, 7, NoMeta, array<NoMeta, 7>{}, PermB>::template load<
         array<int, 7>{8, 16, 32, 64, 1, 2, 4}, // row major
         MemCheckNone,
-        false
+        1
     >(b, lane);
 
     Frag<dtype, 7, NoMeta, array<NoMeta, 7>{}, PermC> c_frag =
@@ -28,7 +28,7 @@ __global__ void test_mma_m16_n8_k16_ker(const u16* a, const u16* b, u16* c)
     c_frag.template store<
         array<int, 7>{8, 16, 32, 64, 1, 2, 4}, // row major
         MemCheckNone,
-        false
+        1
     >(c, lane);
 }
 
@@ -43,8 +43,8 @@ torch::Tensor test_mma_m16_n8_k16(at::Tensor& A, at::Tensor& B)
     TORCH_CHECK(A.device().is_cuda());
     TORCH_CHECK(B.device() == A.device());
 
-    TORCH_CHECK_EQ(A.scalar_type(), DType::Half);
-    TORCH_CHECK_EQ(B.scalar_type(), DType::Half);
+    TORCH_CHECK_EQ(A.scalar_type(), torch::ScalarType::Half);
+    TORCH_CHECK_EQ(B.scalar_type(), torch::ScalarType::Half);
 
     at::cuda::CUDAGuard device_guard(A.get_device());
     auto stream = at::cuda::getCurrentCUDAStream().stream();

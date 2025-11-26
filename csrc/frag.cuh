@@ -6,7 +6,6 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <mma.h>
-#include <torch/extension.h>
 
 template <size_t N> struct Perm {
     array<int, N> ord;
@@ -93,31 +92,31 @@ constexpr auto perm_compose(auto p1, auto p2) /* -> inferred */ { return p1 + p2
 // for shared mem, with 32 bank model
 // how many loads does it take?
 template <int limit = 1> struct SmBankCount {
-    // offsets in words
-    static constexpr auto check(array<int, 32> word_offsets) -> bool
+    static constexpr auto check(array<int, 32> word_offsets, int pack) -> bool
     {
         array<int, 32> banks{};
-        for (int offset : word_offsets) {
-            banks[(offset % 32 + 32) % 32] += 1;
+        // Each lane touches 'pack' consecutive 32-bit words => 'pack' consecutive banks.
+        for (int lane = 0; lane < 32; ++lane) {
+            int base = word_offsets[lane];
+            for (int j = 0; j < pack; ++j) {
+                int bank = (base + j) % 32;
+                bank = (bank + 32) % 32; // handle negative gracefully
+                banks[bank] += 1;
+            }
         }
 
         int mx = 0;
-
         for (int count : banks) {
             mx = std::max(mx, count);
         }
 
         // can be relaxed to <= if desirable
-        if (mx == limit) {
-            return true;
-        } else {
-            return false;
-        }
+        return mx == limit * pack;
     }
 };
 
 struct Coalesced {
-    static constexpr auto check(array<int, 32> word_offsets) -> bool
+    static constexpr auto check(array<int, 32> word_offsets, int pack) -> bool
     {
         for (int i = 0; i < 32; i++) {
             if (word_offsets[i] != i) {
@@ -129,7 +128,10 @@ struct Coalesced {
 };
 
 struct MemCheckNone {
-    static constexpr auto check(array<int, 32> word_offsets) -> bool { return true; }
+    static constexpr auto check(array<int, 32> word_offsets, int pack) -> bool
+    {
+        return true;
+    }
 };
 
 struct OK {
@@ -168,81 +170,121 @@ template <int N> constexpr auto find_item(array<int, N> arr, int item) -> int
     return 0;
 }
 
-// try to pack a bunch of u16 loads to u32 loads
-template <int N>
-constexpr auto compute_pack(array<int, N> offsets)
-    -> tuple<array<int, N / 2>, array<int, N / 2>, array<int, N / 2>>
+// break offsets into continuous chunks of length P
+// each chunk must start with an index that is multiple of P
+// negative offsets are allowed
+// errors if not possible
+//
+template <int N, int P>
+constexpr auto compute_pack(array<int, N> offsets) -> pair<
+    array<int, N / P>,          // the base offsets of each chunk
+    array<array<int, P>, N / P> // for each chunk: for the elements in the chunk, their
+                                // corresponding index in the original offsets
+>
 {
-    array<int, N / 2> offsets_load{};
-    int cur = 0;
-    for (int offset : offsets) {
-        if (offset % 2 == 0) {
-            offsets_load[cur] = offset;
-            cur++;
-        }
-    }
-    assert(cur == N / 2);
+    static_assert(P > 0, "P must be positive");
+    static_assert(N % P == 0, "N must be divisible by P");
+    constexpr int C = N / P;
 
-    array<int, N / 2> idxs_even{};
-    array<int, N / 2> idxs_odd{};
+    array<int, C> bases{};
+    array<array<int, P>, C> idxs{};
+    array<bool, N> used{};
+    for (int j = 0; j < N; ++j)
+        used[j] = false;
 
-    for (int i = 0; i < N; i++) {
-        if (offsets[i] % 2 == 0) {
-            auto item = find_item<N / 2>(offsets_load, offsets[i]);
-            idxs_even[item] = i;
-        } else {
-            auto item = find_item<N / 2>(offsets_load, offsets[i] - 1);
-            idxs_odd[item] = i;
+    auto modP = [](int v) constexpr -> int {
+        int r = v % P;
+        return (r < 0) ? (r + P) : r;
+    };
+
+    int bc = 0;
+
+    // Discover chunks in the order their base (multiple of P) appears in offsets.
+    for (int i = 0; i < N; ++i) {
+        int v = offsets[i];
+        if (modP(v) != 0)
+            continue; // not a base
+
+        // Ensure this base hasn't been added already
+        for (int t = 0; t < bc; ++t) {
+            assert(bases[t] != v && "Duplicate base encountered");
         }
+
+        bases[bc] = v;
+
+        // For this base, find the P consecutive elements base+k in offsets
+        for (int k = 0; k < P; ++k) {
+            int target = v + k;
+            int found = -1;
+            for (int j = 0; j < N; ++j) {
+                if (!used[j] && offsets[j] == target) {
+                    found = j;
+                    used[j] = true;
+                    break;
+                }
+            }
+            assert(found != -1 && "Missing element for a chunk (non-contiguous)");
+            idxs[bc][k] = found;
+        }
+        ++bc;
     }
-    return {offsets_load, idxs_even, idxs_odd};
+
+    // Must find exactly C bases
+    assert(bc == C && "Number of bases != N/P");
+
+    // All offsets must be covered exactly once
+    for (int j = 0; j < N; ++j) {
+        assert(used[j] && "Offset not covered by any chunk");
+    }
+
+    return {bases, idxs};
 }
 
-template <int N, array<int, N> offsets, bool PACK>
-__device__ __forceinline__ auto load_offsets_aligned(const u16* base) -> array<u16, N>
+template <int N, array<int, N> offsets, int PACK, typename T, typename F>
+__device__ __forceinline__ auto load_offsets_batched(
+    F load_fn // fn<I>() -> array<T, P>
+) -> array<T, N>
 {
-    if constexpr (PACK) {
-        constexpr auto offsets_packed = compute_pack<N>(offsets);
-        auto [offsets_load, idxs_even, idxs_odd] = offsets_packed;
+    constexpr auto offsets_packed = compute_pack<N, PACK>(offsets);
+    constexpr array<int, N / PACK> base_offsets = offsets_packed.first;
+    constexpr array<array<int, PACK>, N / PACK> mapping = offsets_packed.second;
 
-        array<u16, N> ans;
-        const u32* base_ = reinterpret_cast<const u32*>(base);
+    array<T, N> ans;
 
-        for (int i = 0; i < N / 2; i++) {
-            auto tmp = base_[offsets_load[i] / 2];
-            ans[idxs_even[i]] = lo16(tmp);
-            ans[idxs_odd[i]] = hi16(tmp);
+    static_for<N / PACK>([&]<int I>() {
+        constexpr array<int, PACK> mapping_ = mapping[I];
+
+        array<T, PACK> tmp = load_fn.template operator()<base_offsets[I]>();
+#pragma unroll
+        for (int j = 0; j < PACK; j++) {
+            ans[mapping_[j]] = tmp[j];
         }
+    });
 
-        return ans;
-    } else {
-        array<u16, N> ans;
-        for (int i = 0; i < N; i++) {
-            ans[i] = base[offsets[i]];
-        }
-        return ans;
-    }
+    return ans;
 }
 
-template <int N, array<int, N> offsets, bool PACK>
-__device__ __forceinline__ auto store_offsets_aligned(u16* base, array<u16, N> data)
-    -> void
+template <size_t N, array<int, N> offsets, int PACK, typename T, typename F>
+__device__ __forceinline__ auto store_offsets_batched(
+    array<T, N> data,
+    F store_fn // fn<I>(array<T, P>) that stores array<T, P> at offset I
+) -> void
 {
-    if constexpr (!PACK) {
-        for (int i = 0; i < N; i++) {
-            base[offsets[i]] = data[i];
-        }
-    } else {
-        constexpr auto offsets_packed = compute_pack<N>(offsets);
-        auto [offsets_load, idxs_even, idxs_odd] = offsets_packed;
+    constexpr auto offsets_packed = compute_pack<N, PACK>(offsets);
+    constexpr array<int, N / PACK> base_offsets = offsets_packed.first;
+    constexpr array<array<int, PACK>, N / PACK> mapping = offsets_packed.second;
 
-        u32* base_ = reinterpret_cast<u32*>(base);
+    static_for<N / PACK>([&]<int I>() {
+        constexpr array<int, PACK> mapping_ = mapping[I];
 
-        for (int i = 0; i < N / 2; i++) {
-            auto val = pack_b16x2(data[idxs_even[i]], data[idxs_odd[i]]);
-            base_[offsets_load[i] / 2] = val;
+        array<T, PACK> tmp;
+#pragma unroll
+        for (int j = 0; j < PACK; j++) {
+            tmp[j] = data[mapping_[j]];
         }
-    }
+
+        store_fn.template operator()<base_offsets[I]>(tmp);
+    });
 }
 
 constexpr auto is_linear(array<int, 32> offsets) -> bool
@@ -361,24 +403,47 @@ struct Frag {
         return ans;
     }
 
-    template <array<int, N> strides, typename MEM>
+    template <array<int, N> strides, int PACK, typename MEM>
     static constexpr auto mem_check_strides()
     {
-        constexpr auto offsets = get_lane_offset_all(strides);
+        constexpr array<int, 32> offsets = get_lane_offset_all(strides);
 
-        if constexpr (MEM::check(u16_to_u32_offsets(offsets))) {
+        constexpr bool check_pack = [&]() {
+            bool ok = true;
+            for (auto offset : offsets) {
+                if (offset % PACK != 0) {
+                    ok = false;
+                }
+            }
+            return ok;
+        }();
+
+        constexpr array<int, 32> word_offsets = [&]() {
+            array<int, 32> ans;
+            for (int i = 0; i < 32; i++) {
+                ans[i] = offsets[i] / 2;
+            }
+            return ans;
+        }();
+
+        if constexpr (check_pack && MEM::check(word_offsets, div_ceil(PACK, 2))) {
             return OK();
         } else {
-            return MemCheckFailed<strides, MEM>();
+            return MemCheckFailed<
+                array<int, 5>{
+                    strides[P[0]],
+                    strides[P[1]],
+                    strides[P[2]],
+                    strides[P[3]],
+                    strides[P[4]]
+                },
+                MEM
+            >();
         }
     }
 
     // get_lane_offset_impl but optentially optimized and checked with mem_check_strides
-    template <
-        array<int, N> strides,
-        typename MEM,
-        typename = CHECK_V<mem_check_strides<strides, MEM>()>
-    >
+    template <array<int, N> strides>
     __device__ __forceinline__ static auto get_lane_offset(int lane) -> int
     {
         assert_((0 <= lane) && (lane < 32));
@@ -433,12 +498,11 @@ struct Frag {
         }
 
         // Invert Trans over full N (cheap); we only use the local part.
-        array<int, N> inv{};
-        for (int i = 0; i < N; ++i)
-            inv[Q[i]] = i;
+        constexpr auto inv = Q.inv();
 
         // For each old local index, compute its destination index by permuting
         // bit-positions.
+#pragma unroll
         for (int src = 0; src < L; ++src) {
             int dst = 0;
             for (int k = 0; k < (N - 5); ++k) {
@@ -468,32 +532,121 @@ struct Frag {
 
     template <
         array<int, N> strides = default_strides<N>(), // logical strides
+        int PACK,
         typename MEM = SmBankCount<1>,
-        bool PACK = true,
-        typename = CHECK_V<mem_check_strides<strides, MEM>()>
+        typename = CHECK_V<mem_check_strides<strides, PACK, MEM>()>,
+        typename F
     >
-    __device__ static auto load(const u16* ptr, int lane) -> Self
+    __device__ static auto load_with(const u16* ptr, int lane, F load_fn) -> Self
     {
-        ptr += get_lane_offset<strides, MEM>(lane);
+        ptr += get_lane_offset<strides>(lane);
+        ptr = assert_aligned(ptr, sizeof(u16) * PACK);
+
         constexpr auto offsets = get_local_offsets(strides);
 
-        array<u16, 1 << (N - 5)> ans =
-            load_offsets_aligned<offsets.size(), offsets, PACK>(ptr);
+        auto ans = load_offsets_batched<offsets.size(), offsets, PACK, u16>(
+            [&]<int I>() -> array<u16, PACK> {
+                static_assert(I % PACK == 0);
+                return load_fn(ptr + I);
+            }
+        );
         return {ans};
     }
 
     template <
         array<int, N> strides = default_strides<N>(), // logical strides
         typename MEM = SmBankCount<1>,
-        bool PACK = true,
-        typename = CHECK_V<mem_check_strides<strides, MEM>()>
+        int PACK = 2,
+        typename = CHECK_V<mem_check_strides<strides, PACK, MEM>()>
     >
-    __device__ auto store(u16* ptr, int lane) const
+    __device__ static auto load(const u16* ptr, int lane) -> Self
     {
-        ptr += get_lane_offset<strides, MEM>(lane);
+        return load_with<strides, PACK, MEM>(
+            ptr,
+            lane,
+            [](const u16* ptr) -> array<u16, PACK> {
+                array<u16, PACK> piece;
+
+                if constexpr (PACK == 1) {
+                    piece[0] = *ptr;
+                } else {
+                    // pack to u32
+                    static_assert(PACK % 2 == 0);
+                    const u32* ptr_u32 = reinterpret_cast<const u32*>(ptr);
+                    u32 piece_u32[PACK / 2];
+
+                    if constexpr (PACK == 2) {
+                        piece_u32[0] = *ptr_u32;
+                    } else if constexpr (PACK == 8) {
+                        cp_16(piece_u32, ptr_u32);
+                    } else {
+                        typename Dummy2<PACK>::x x;
+                    }
+
+#pragma unroll
+                    for (int i = 0; i < PACK / 2; i++) {
+                        piece[2 * i] = lo16(piece_u32[i]);
+                        piece[2 * i + 1] = hi16(piece_u32[i]);
+                    }
+                }
+
+                return piece;
+            }
+        );
+    }
+
+    template <
+        array<int, N> strides = default_strides<N>(), // logical strides
+        int PACK,
+        typename MEM = SmBankCount<1>,
+        typename = CHECK_V<mem_check_strides<strides, PACK, MEM>()>,
+        typename F
+    >
+    __device__ auto store_with(u16* ptr, int lane, F store_fn) const -> void
+    {
+        ptr += get_lane_offset<strides>(lane);
+        ptr = assert_aligned(ptr, sizeof(u16) * PACK);
+
         constexpr auto offsets = get_local_offsets(strides);
 
-        store_offsets_aligned<offsets.size(), offsets, PACK>(ptr, data);
+        store_offsets_batched<offsets.size(), offsets, PACK>(
+            data,
+            [&]<int I>(array<u16, PACK> piece) {
+                static_assert(I % PACK == 0);
+                store_fn(ptr + I, piece);
+            }
+        );
+    }
+
+    template <
+        array<int, N> strides = default_strides<N>(), // logical strides
+        typename MEM = SmBankCount<1>,
+        int PACK = 2,
+        typename = CHECK_V<mem_check_strides<strides, PACK, MEM>()>
+    >
+    __device__ auto store(u16* ptr, int lane) const -> void
+    {
+        store_with<strides, PACK, MEM>(ptr, lane, [](u16* ptr, array<u16, PACK> piece) {
+            if constexpr (PACK == 1) {
+                *ptr = piece[0];
+            } else {
+                // pack to u32
+                static_assert(PACK % 2 == 0);
+                u32* ptr_u32 = reinterpret_cast<u32*>(ptr);
+                u32 piece_u32[PACK / 2];
+                for (int i = 0; i < PACK / 2; i++) {
+                    piece_u32[i] = pack_b16x2(piece[2 * i], piece[2 * i + 1]);
+                }
+
+                if constexpr (PACK == 2) {
+                    *ptr_u32 = piece_u32[0];
+                } else if constexpr (PACK == 8) {
+                    cp_16(ptr_u32, piece_u32);
+                } else {
+                    typename Dummy2<PACK>::x x;
+                }
+            }
+        });
     }
 
     // <logical behavior>
@@ -573,9 +726,11 @@ struct Frag {
         constexpr int B_count = 1 << B_bits;
 
         // For each batch-slice, extract M-dim arg, call fn, and insert back.
+#pragma unroll
         for (int b = 0; b < B_count; ++b) {
             ArgT arg_small{};
             // Extract slice from self_trans into arg_small.
+#pragma unroll
             for (int i = 0; i < L_small; ++i) {
                 int idx_big = i | (b << (M - 5));
                 arg_small.data[i] = self_trans.data[idx_big];
@@ -585,6 +740,7 @@ struct Frag {
             auto ret_small = fn(arg_small);
 
             // Stitch back into out_pre at the same batch offset.
+#pragma unroll
             for (int i = 0; i < L_small; ++i) {
                 int idx_big = i | (b << (M - 5));
                 out_pre.data[idx_big] = ret_small.data[i];
