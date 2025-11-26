@@ -51,6 +51,8 @@ __host__ __device__ __forceinline__ T* assume_aligned_ptr(T* p)
 template <typename T> struct Dummy {};
 template <auto T> struct Dummy2 {};
 
+constexpr float INV_SQRT2 = 0.7071067811865475244f;
+
 ////////////////////////////////////////
 
 template <typename T> constexpr auto div_ceil(T x, T y) -> T { return (x + y - 1) / y; }
@@ -121,7 +123,7 @@ template <DType dtype> __device__ __forceinline__ u16 add16(u16 x, u16 y)
     using T = CudaType<dtype>::Type;
     T x_ = std::bit_cast<T>(x);
     T y_ = std::bit_cast<T>(y);
-    T ans = x_ + y_;
+    T ans = __hadd(x_, y_);
     return std::bit_cast<u16>(ans);
 }
 
@@ -130,7 +132,7 @@ template <DType dtype> __device__ __forceinline__ u16 sub16(u16 x, u16 y)
     using T = CudaType<dtype>::Type;
     T x_ = std::bit_cast<T>(x);
     T y_ = std::bit_cast<T>(y);
-    T ans = x_ - y_;
+    T ans = __hsub(x_, y_);
     return std::bit_cast<u16>(ans);
 }
 

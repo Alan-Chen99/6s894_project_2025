@@ -237,6 +237,27 @@ constexpr auto compute_pack(array<int, N> offsets) -> pair<
         assert(used[j] && "Offset not covered by any chunk");
     }
 
+    // Sort chunks by base offset ascending; keep idxs rows in sync.
+    for (int i = 0; i < C - 1; ++i) {
+        int min_i = i;
+        for (int j = i + 1; j < C; ++j) {
+            if (bases[j] < bases[min_i]) {
+                min_i = j;
+            }
+        }
+        if (min_i != i) {
+            int tmpb = bases[i];
+            bases[i] = bases[min_i];
+            bases[min_i] = tmpb;
+
+            for (int k = 0; k < P; ++k) {
+                int tmp = idxs[i][k];
+                idxs[i][k] = idxs[min_i][k];
+                idxs[min_i][k] = tmp;
+            }
+        }
+    }
+
     return {bases, idxs};
 }
 

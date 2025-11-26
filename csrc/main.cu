@@ -57,13 +57,12 @@ __device__ auto load_rot_8(const u16* in, u16* sm, int lane) -> void
     });
 }
 
-// rotate 0..9 except 3, 4
 template <
     DType dtype,
     int N,
     int P // # of cp.async pipeline at once
 >
-__device__ auto load_rot_8_10(const u16* in, u16* sm, int lane) -> void
+__device__ auto load_rot_10(const u16* in, u16* sm, int lane) -> void
 {
     static_for<N + P>([&]<int I>() {
         if constexpr (I < N) {
@@ -85,17 +84,17 @@ __device__ auto load_rot_8_10(const u16* in, u16* sm, int lane) -> void
             u16* data = sm + idx * 1024;
 
             constexpr auto perm = Perm<10>{
-                1,
-                2,
-                5,
-                8,
-                9,
-                // local, assign one axis to pack to u32
-                0,
-                6,
-                7,
                 3,
                 4,
+                5,
+                6,
+                7,
+                // local, assign one axis to pack to u32
+                0,
+                8,
+                9,
+                1,
+                2,
             };
 
             auto in_reg = Frag<
@@ -107,15 +106,17 @@ __device__ auto load_rot_8_10(const u16* in, u16* sm, int lane) -> void
             >::
                 template load<
                     default_strides<10>(), //
-                    SmBankCount<4>
+                    SmBankCount<1>,
+                    8
                 >(data, lane);
 
-            auto out_reg = hada_rot_8(in_reg, lane);
+            auto out_reg = hada_rot_all(in_reg, lane);
 
             // Dummy<decltype(out_reg)>::x x;
             out_reg.template store<
                 default_strides<10>(), //
-                SmBankCount<4>
+                SmBankCount<1>,
+                8
             >(data, lane);
         }
     });
@@ -260,23 +261,22 @@ struct RowHandler<dtype, N> {
 
         extern __shared__ u16 sm[];
 
-        load_rot_8_10<dtype, 32, 3>(in, sm, lane);
+        load_rot_10<dtype, 32, 3>(in, sm, lane);
 
         __syncwarp();
 
 #pragma unroll
-        for (int i = 0; i < 32; i++) {
-            // 5..9
-            u16* base_in = sm + 32 * i;
+        for (int i = 0; i < 16; i++) {
+            u16* base_in = sm + 64 * i;
+            u16* global_out = out + 64 * i;
 
-            u16* global_out = out + 32 * i;
-
-            constexpr array<int, 10> strides = {
+            constexpr array<int, 11> strides = {
                 1 << 0,  // 0: Id
                 1 << 1,  // 1: Id
                 1 << 2,  // 2: Id
-                1 << 3,  // 3:
-                1 << 4,  // 4:
+                1 << 3,  // 3: Id
+                1 << 4,  // 4: Id
+                1 << 5,  // 5: Id
                 1 << 10, // 10:
                 1 << 11, // 11:
                 1 << 12, // 12:
@@ -284,12 +284,10 @@ struct RowHandler<dtype, N> {
                 1 << 14, // 14:
             };
 
-            constexpr array<AxSpec, 10> spec = []() consteval {
-                array<AxSpec, 10> spec = repeat_to_array<10>(AxSpec::Id);
-                spec[3] = AxSpec::Rot;
-                spec[4] = AxSpec::Rot;
+            constexpr array<AxSpec, 11> spec = []() consteval {
+                array<AxSpec, 11> spec = repeat_to_array<11>(AxSpec::Id);
 
-                for (int i = 5; i < 10; i++) {
+                for (int i = 6; i < 11; i++) {
                     spec[i] = AxSpec::Rot;
                 }
                 return spec;
@@ -297,10 +295,10 @@ struct RowHandler<dtype, N> {
 
             auto in_reg = Frag<
                 dtype,
-                10,
+                11,
                 AxSpec,
                 spec,
-                Perm<10>{
+                Perm<11>{
                     3,
                     4,
                     5,
@@ -309,28 +307,17 @@ struct RowHandler<dtype, N> {
                     0, // packing
                     8,
                     9,
+                    10,
                     1,
                     2,
                 }
-            >::template load<strides, SmBankCount<2>, 8>(base_in, lane);
+            >::template load<strides, SmBankCount<1>, 8>(base_in, lane);
 
-            auto out_reg = hada_rot_8(in_reg, lane);
+            auto out_reg = hada_rot_all(in_reg, lane);
             // Dummy<decltype(out_reg)>::x x;
+            static_assert(rot_finished(out_reg.AxMeta_));
 
-            constexpr array<int, 10> strides_out = {
-                1 << 0,
-                1 << 1,
-                1 << 2,
-                1 << 3,
-                1 << 4,
-                1 << 10, // 10:
-                1 << 11, // 11:
-                1 << 12, // 12:
-                1 << 13, // 13:
-                1 << 14, // 14:
-            };
-
-            out_reg.template store<strides_out, SmBankCount<2>, 8>(global_out, lane);
+            out_reg.template store<strides, SmBankCount<1>, 8>(global_out, lane);
         }
     }
 };

@@ -7,7 +7,23 @@ enum AxSpec {
     Rot // apply a hadamard transform
 };
 
-template <DType dtype, int N, array<AxSpec, N> spec, Perm<N * 2> P>
+template <size_t N> constexpr auto rot_finished(array<AxSpec, N> spec) -> bool
+{
+    for (auto x : spec) {
+        if (x == AxSpec::Rot) {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <
+    float extra_scale = 1.0f,
+    DType dtype,
+    int N,
+    array<AxSpec, N> spec,
+    Perm<N * 2> P
+>
 __forceinline__ constexpr auto create_hada_A(int lane)
     -> Frag<dtype, N * 2, AxSpec, array_concat(spec, repeat_to_array<N>(AxSpec::Id)), P>
 {
@@ -17,53 +33,60 @@ __forceinline__ constexpr auto create_hada_A(int lane)
         AxSpec,
         array_concat(spec, repeat_to_array<N>(AxSpec::Id)),
         P
-    >::
-        create(
-            lane, //
-            [](array<bool, N * 2> coord) -> u16 {
-                // Count Rot axes
-                constexpr int R = []() constexpr {
-                    int c = 0;
-                    for (int i = 0; i < N; ++i)
-                        if (spec[i] == AxSpec::Rot)
-                            ++c;
-                    return c;
-                }();
+    >::create(lane, [](array<bool, N * 2> coord) -> u16 {
+        // Count Rot axes
+        constexpr int R = []() constexpr {
+            int c = 0;
+            for (int i = 0; i < N; ++i)
+                if (spec[i] == AxSpec::Rot)
+                    ++c;
+            return c;
+        }();
 
-                // 2^(-R/2) = (0.5)^(R/2) * (1/sqrt(2))^(R%2)
-                constexpr float inv_sqrt2 = 0.7071067811865475244f;
-                constexpr float scale_val = []() constexpr {
-                    float s = 1.0f;
-                    for (int i = 0; i < (R / 2); ++i)
-                        s *= 0.5f;
-                    if (R & 1)
-                        s *= inv_sqrt2;
-                    return s;
-                }();
-                constexpr u16 s_pos = f32_to_dtype<dtype>(scale_val);
-                constexpr u16 s_neg = f32_to_dtype<dtype>(-scale_val);
+        static_assert(R > 0);
 
-                // coord[0..N-1] = k bits, coord[N..2N-1] = m bits
-                // Id axes: Kronecker delta (k_i == m_i), otherwise 0
-                // Rot axes: contribute (-1)^{k_i & m_i} to the sign
-                int parity = 0;
-                for (int i = 0; i < N; ++i) {
-                    bool ki = coord[i];
-                    bool mi = coord[i + N];
-                    if (spec[i] == AxSpec::Id) {
-                        if (ki != mi) {
-                            return static_cast<u16>(0);
-                        }
-                    } else { // AxSpec::Rot
-                        if (ki && mi) {
-                            parity ^= 1;
-                        }
-                    }
+        // 2^(-R/2) = (0.5)^(R/2) * (1/sqrt(2))^(R%2)
+        constexpr float scale_val = []() constexpr {
+            float s = extra_scale;
+            for (int i = 0; i < R; ++i)
+                s *= INV_SQRT2;
+            return s;
+        }();
+
+        constexpr u16 s_pos = f32_to_dtype<dtype>(scale_val);
+        constexpr u16 s_neg = f32_to_dtype<dtype>(-scale_val);
+
+        // typename Dummy2<scale_val>::x x;
+        // typename Dummy2<s_neg>::x x;
+
+        // coord[0..N-1] = k bits, coord[N..2N-1] = m bits
+        // Id axes: Kronecker delta (k_i == m_i), otherwise 0
+        // Rot axes: contribute (-1)^{k_i & m_i} to the sign
+        int parity = 0;
+        for (int i = 0; i < N; ++i) {
+            bool ki = coord[i];
+            bool mi = coord[i + N];
+            if (spec[i] == AxSpec::Id) {
+                if (ki != mi) {
+                    return static_cast<u16>(0);
                 }
-                return (parity == 0) ? s_pos : s_neg;
+            } else { // AxSpec::Rot
+                if (ki && mi) {
+                    parity ^= 1;
+                }
             }
-        );
+        }
+        return (parity == 0) ? s_pos : s_neg;
+    });
 }
+
+constexpr auto test_hada_a = create_hada_A<
+    2.0f,
+    DType::Half,
+    4,
+    array<AxSpec, 4>{AxSpec::Rot, AxSpec::Rot, AxSpec::Rot, AxSpec::Id},
+    PermA
+>(0);
 
 constexpr auto test_collect(auto cb)
 {
@@ -74,7 +97,7 @@ constexpr auto test_collect(auto cb)
     return ans;
 }
 
-template <DType dtype, array<AxSpec, 7> spec>
+template <float extra_scale = 1.0f, DType dtype, array<AxSpec, 7> spec>
 __device__ auto hada_rot_4_impl(Frag<dtype, 7, AxSpec, spec, PermB> arr, int lane)
     -> Frag<
         dtype,
@@ -87,7 +110,7 @@ __device__ auto hada_rot_4_impl(Frag<dtype, 7, AxSpec, spec, PermB> arr, int lan
         PermC
     >
 {
-    auto A = create_hada_A<dtype, 4, slice_array<4>(spec), PermA>(lane);
+    auto A = create_hada_A<extra_scale, dtype, 4, slice_array<4>(spec), PermA>(lane);
     // Had rot on the first 4 logical axis
     return mma_m16_n8_k16<dtype>(A, arr);
 }
@@ -115,7 +138,7 @@ constexpr auto hada_rot_4_axis(array<AxSpec, N> spec, Perm<N> P) -> array<AxSpec
 // and using the rest as batch dim
 //
 template <
-    //
+    float extra_scale = 1.0f,
     DType dtype,
     size_t N,
     array<AxSpec, N> spec,
@@ -126,7 +149,7 @@ __device__ auto hada_rot_4(Frag<dtype, N, AxSpec, spec, P> arr, int lane) -> Bla
 >
 {
     auto ans = arr.template apply_transposed<7, PermB>([&](auto frag) {
-        return hada_rot_4_impl(frag, lane);
+        return hada_rot_4_impl<extra_scale>(frag, lane);
     });
     return ans;
 }
@@ -143,7 +166,7 @@ constexpr auto hada_rot_8_axis(array<AxSpec, N> spec, Perm<N> P) -> array<AxSpec
 
 // rotate first 8 axis: P[0], P[1], ...
 template <
-    //
+    float extra_scale = 1.0f,
     DType dtype,
     size_t N,
     array<AxSpec, N> spec,
@@ -154,7 +177,7 @@ __device__ auto hada_rot_8(Frag<dtype, N, AxSpec, spec, P> arr, int lane)
 {
     return arr.template apply_transposed<8>([&](auto frag) {
         // {0, 0, 1, 1, 1, 0, 0, 1}, {3, 4, 5, 0, 1, 2, 6, 7}
-        auto tmp1 = hada_rot_4(frag, lane);
+        auto tmp1 = hada_rot_4<extra_scale>(frag, lane);
 
         // {0, 0, 1, 1, 1, 0, 0, 1}, {3, 4, 5, 0, 1, 2, 7, 6}
         auto tmp2 = tmp1.template transpose_layout<Perm<8>{0, 1, 2, 3, 4, 5, 7, 6}>();
@@ -164,4 +187,87 @@ __device__ auto hada_rot_8(Frag<dtype, N, AxSpec, spec, P> arr, int lane)
 
         return tmp3.template transpose_layout<Perm<8>{0, 1, 2, 3, 4, 5, 7, 6}>();
     });
+}
+
+template <size_t N>
+constexpr auto hada_rot_axis_local_spec(array<AxSpec, N> spec, Perm<N> P, int K)
+    -> array<AxSpec, N>
+{
+    assert(K >= 5 && K < N);
+    assert(spec[P[K]] == AxSpec::Rot);
+
+    array<AxSpec, N> ans = spec;
+    // K is physical; update the corresponding logical axis spec to Id.
+    ans[P[K]] = AxSpec::Id;
+    return ans;
+}
+
+// Perform an unscaled 2-point Hadamard butterfly along physical axis K (K >= 5).
+// For each pair (x0, x1) along that axis, compute:
+//   y0 = x0 + x1
+//   y1 = x0 - x1
+// No memory ops; all in registers via add16/sub16.
+// NOTE: No normalization is applied. Caller is responsible for any scaling.
+template <int K, DType dtype, size_t N, array<AxSpec, N> spec, Perm<N> P>
+__device__ __forceinline__ auto hada_rot_axis_local(Frag<dtype, N, AxSpec, spec, P> arr)
+    -> Frag<dtype, N, AxSpec, hada_rot_axis_local_spec<N>(spec, P, K), P>
+{
+    static_assert(K >= 5 && K < N, "Axis must be a local (>=5) physical axis and < N");
+
+    array<u16, 1 << (N - 5)> out{};
+
+    constexpr int L = 1 << (N - 5);    // elements per thread
+    constexpr int bit = K - 5;         // local bit position in data[] index
+    constexpr int stride = 1 << bit;   // pair distance along that axis
+    constexpr int block = stride << 1; // block size for the butterfly
+
+#pragma unroll
+    for (int base = 0; base < L; base += block) {
+#pragma unroll
+        for (int j = 0; j < stride; ++j) {
+            int i0 = base + j;
+            int i1 = i0 + stride;
+
+            u16 x0 = arr.data[i0];
+            u16 x1 = arr.data[i1];
+
+            u16 y0 = add16<dtype>(x0, x1);
+            u16 y1 = sub16<dtype>(x0, x1);
+
+            out[i0] = y0;
+            out[i1] = y1;
+        }
+    }
+    return {out};
+}
+
+// rotate all axis. requires N >= 8
+template <
+    float extra_scale = 1.0f,
+    DType dtype,
+    size_t N,
+    array<AxSpec, N> spec,
+    Perm<N> P
+>
+__device__ auto hada_rot_all(Frag<dtype, N, AxSpec, spec, P> arr, int lane)
+    -> Frag<dtype, N, AxSpec, repeat_to_array<N>(AxSpec::Id), P>
+{
+    static_assert(N >= 8);
+
+    constexpr int K_local = []() constexpr {
+        for (int k = 8; k < N; ++k) {
+            if (spec[P[k]] == AxSpec::Rot)
+                return k;
+        }
+        return -1;
+    }();
+
+    if constexpr (K_local != -1) {
+        return hada_rot_all<extra_scale * INV_SQRT2>(
+            hada_rot_axis_local<K_local>(arr),
+            lane
+        );
+    } else {
+        return hada_rot_8<extra_scale>(arr, lane);
+    }
 }
