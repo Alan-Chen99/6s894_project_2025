@@ -5,7 +5,6 @@
 #include "frag.cuh"
 #include "hada.cuh"
 #include "utils.cuh"
-#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cuda_bf16.h>
@@ -13,83 +12,6 @@
 #include <cuda_runtime.h>
 #include <mma.h>
 #include <torch/extension.h>
-//
-
-struct HadMat {
-    array<array<bool, 16>, 16> data;
-
-    // Build the standard 16x16 Hadamard (+1/-1) by parity of popcount(i & j).
-    static constexpr auto create_had() -> HadMat
-    {
-        HadMat ans{};
-        for (int i = 0; i < 16; i++)
-            for (int j = 0; j < 16; j++)
-                ans.data[i][j] = (__builtin_popcount(i & j) % 2) == 0;
-        return ans;
-    }
-
-    // Shard the matrix into warp-lane masks using a callback that provides
-    // the (row, col) per ai register index i=0..7 for each lane.
-    constexpr auto shard(auto cb) const -> array<u32, 8>
-    {
-        array<u32, 8> ans{};
-        for (int lane = 0; lane < 32; lane++) {
-            auto pos = cb(lane);
-            for (int j = 0; j < 8; j++) {
-                auto [x, y] = pos[j];
-                if (data[x][y])
-                    ans[j] |= (1u << lane);
-            }
-        }
-        return ans;
-    }
-};
-
-//////////
-// arg:
-//  map_fn: (Frag, lane) -> Frag function. This only need to support a standard layout
-//   for Frag.
-//  arr: Frag with axis spec P. This operation will be P dependent.
-//
-// This function operates on a submatrix given by axis P[0], P[1], .. , P[N-1]
-// (which are the logical axis corresponding to the first N pysical axis).
-//
-// the map_fn function will be run on each slice of the submatrix
-// P[0] will be passed as the 0th logical axis of map_fn
-//
-// Returns of map_fn will be aggregated and returned
-template <int N, int M, Perm<M> P, DType dtype>
-__host__ __device__ __forceinline__ auto apply_on_local_prefix(
-    const Frag<dtype, M, P> arr,
-    auto map_fn,
-    int lane
-)
-{
-    static_assert(N <= M);
-    constexpr Perm<N> out_perm =
-        decltype(map_fn(std::declval<Frag<dtype, N, Perm<N>::ID()>>(), 0))::perm();
-    constexpr int D = 1 << (M - N); // batch dimensions
-    constexpr int S = 1 << (N - 5); // #count of u16
-    static_assert(arr.data.size() == D * S);
-
-    using OutType = Frag<dtype, M, P + out_perm>;
-    BlackBox<OutType> ans;
-
-    for (int i = 0; i < D; i++) {
-        Frag<dtype, N, Perm<N>::ID()> sub_mat;
-        for (int j = 0; j < S; j++) {
-            sub_mat.data[j] = arr.data[S * i + j];
-        }
-
-        Frag<dtype, N, out_perm> res = map_fn(sub_mat, lane);
-
-        for (int j = 0; j < S; j++) {
-            ans.data[S * i + j] = res.data[j];
-        }
-    }
-
-    return ans;
-}
 
 /////////////////////////////////////////////////
 
@@ -125,6 +47,8 @@ __device__ auto load_rot_8(const u16* in, u16* sm, int lane) -> void
             auto in_reg = Frag<
                 dtype,
                 8,
+                AxSpec,
+                repeat_to_array<8>(AxSpec::Rot),
                 Perm<8>{1, 2, 3, 4, 5, 0 /*u16->u32 packing axis*/, 6, 7}
             >::load(data, lane);
             auto out_reg = hada_rot_8(in_reg, lane);
@@ -161,7 +85,8 @@ template <DType dtype> struct RowHandler<dtype, 8> {
         // if we controlled order with this instead, loads would not be colaced
         constexpr auto strides = default_strides<8>();
 
-        auto in_reg = Frag<dtype, 8, perm>::template load<strides, Coalesced>(in, lane);
+        auto in_reg = Frag<dtype, 8, AxSpec, repeat_to_array<8>(AxSpec::Rot), perm>::
+            template load<strides, Coalesced>(in, lane);
 
         auto out_reg = hada_rot_8(in_reg, lane);
 
@@ -196,6 +121,11 @@ template <DType dtype> struct RowHandler<dtype, 12> {
             auto in_reg = Frag<
                 dtype,
                 8,
+                AxSpec,
+                array_concat(
+                    repeat_to_array<4>(AxSpec::Id),
+                    repeat_to_array<4>(AxSpec::Rot)
+                ),
                 Perm<8>{
                     6 /*0*/,
                     5 /*1*/,
@@ -208,8 +138,14 @@ template <DType dtype> struct RowHandler<dtype, 12> {
                 }
             >::template load<strides, SmBankCount<1>>(base, lane);
 
-            Frag<dtype, 8, Perm<8>{1, 2, 4, 6, 5, 3, 7, 0}> out_reg =
-                hada_rot_4(in_reg, lane);
+            Frag<
+                dtype,
+                8,
+                AxSpec,
+                repeat_to_array<8>(AxSpec::Id),
+                Perm<8>{1, 2, 4, 6, 5, 3, 7, 0}
+            >
+                out_reg = hada_rot_4(in_reg, lane);
 
             out_reg.template store<strides, SmBankCount<1>>(base, lane);
         }

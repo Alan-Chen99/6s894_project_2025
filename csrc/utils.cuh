@@ -94,23 +94,121 @@ template <std::size_t N, typename F> __device__ void static_for(F&& f)
     static_for_impl(std::make_index_sequence<N>{}, std::forward<F>(f));
 }
 
-// template <DType dtype> __device__ __forceinline__ u16 add16(u16 x, u16 y)
-// {
-//     using T = CudaType<dtype>::Type;
-//     T x_ = std::bit_cast<T>(x);
-//     T y_ = std::bit_cast<T>(y);
-//     T ans = x_ + y_;
-//     return std::bit_cast<u16>(ans);
-// }
+template <DType dtype> __device__ __forceinline__ u16 add16(u16 x, u16 y)
+{
+    using T = CudaType<dtype>::Type;
+    T x_ = std::bit_cast<T>(x);
+    T y_ = std::bit_cast<T>(y);
+    T ans = x_ + y_;
+    return std::bit_cast<u16>(ans);
+}
 
-// template <DType dtype> __device__ __forceinline__ u16 sub16(u16 x, u16 y)
-// {
-//     using T = CudaType<dtype>::Type;
-//     T x_ = std::bit_cast<T>(x);
-//     T y_ = std::bit_cast<T>(y);
-//     T ans = x_ - y_;
-//     return std::bit_cast<u16>(ans);
-// }
+template <DType dtype> __device__ __forceinline__ u16 sub16(u16 x, u16 y)
+{
+    using T = CudaType<dtype>::Type;
+    T x_ = std::bit_cast<T>(x);
+    T y_ = std::bit_cast<T>(y);
+    T ans = x_ - y_;
+    return std::bit_cast<u16>(ans);
+}
+
+////////////////////////////////////////////////////////////
+// LLM generated function to constexpr convert f32 to f16/bf16
+
+// IEEE-754 float32 -> float16 (binary16) with round-to-nearest-even
+__forceinline__ constexpr u16 f16_from_f32_bits(u32 f)
+{
+    u32 sign = (f >> 16) & 0x8000u; // move sign to bit 15
+    u32 exp = (f >> 23) & 0xFFu;
+    u32 mant = f & 0x7FFFFFu;
+
+    // NaN/Inf
+    if (exp == 0xFFu) {
+        if (mant == 0)
+            return static_cast<u16>(sign | 0x7C00u); // inf
+        // qNaN: preserve payload as much as possible, ensure at least one mant bit
+        u16 payload = static_cast<u16>(mant >> 13);
+        if (payload == 0)
+            payload = 1;
+        return static_cast<u16>(sign | 0x7C00u | payload);
+    }
+
+    // Compute unbiased exponent for half
+    int e = static_cast<int>(exp) - 127 + 15;
+
+    // Underflow to subnormal or zero
+    if (e <= 0) {
+        if (e <= -10) {
+            // Too small, becomes signed zero
+            return static_cast<u16>(sign);
+        }
+        // Subnormal: restore implicit leading 1 then shift with RN-even
+        mant |= 0x00800000u; // add hidden 1
+        int shift = 14 - e;  // (1 - e) + (23 - 10)
+        u32 trunc = mant >> shift;
+        u32 rem = mant & ((1u << shift) - 1u);
+        u32 half = 1u << (shift - 1);
+        u32 inc = (rem > half) || (rem == half && (trunc & 1u));
+        u32 mant10 = trunc + inc;
+        return static_cast<u16>(sign | mant10); // exp=0
+    }
+
+    // Overflow -> Inf
+    if (e >= 31) {
+        return static_cast<u16>(sign | 0x7C00u);
+    }
+
+    // Normalized case: round mantissa from 23 to 10 bits (RN-even)
+    u32 trunc = mant >> 13;
+    u32 rem = mant & 0x1FFFu;
+    u32 inc = (rem > 0x1000u) || (rem == 0x1000u && (trunc & 1u));
+    trunc += inc;
+
+    // Mantissa overflow bumps exponent
+    if (trunc == 0x400u) {
+        ++e;
+        trunc = 0;
+        if (e >= 31) {
+            return static_cast<u16>(sign | 0x7C00u);
+        }
+    }
+
+    return static_cast<u16>(sign | (static_cast<u32>(e) << 10) | trunc);
+}
+
+__forceinline__ constexpr u16 f16_from_f32(float x)
+{
+    u32 bits = std::bit_cast<u32>(x);
+    return f16_from_f32_bits(bits);
+}
+
+/////
+
+__forceinline__ constexpr u16 bf16_from_f32_bits(u32 fbits)
+{
+    u16 top = static_cast<u16>(fbits >> 16);
+    u32 lsb = static_cast<u32>(top & 1u);
+    u32 rounded = fbits + 0x7FFFu + lsb; // RN-even
+    return static_cast<u16>(rounded >> 16);
+}
+
+__forceinline__ constexpr u16 bf16_from_f32(float x)
+{
+    u32 bits = std::bit_cast<u32>(x);
+    return bf16_from_f32_bits(bits);
+}
+
+/////
+
+template <DType dtype> constexpr u16 f32_to_dtype(float x)
+{
+    if constexpr (dtype == DType::Half) {
+        return f16_from_f32(x);
+    } else {
+        static_assert(dtype == DType::BFloat16);
+        return bf16_from_f32(x);
+    }
+}
 
 // __device__ void testfn(u16 a, u16 b) { add16<DType::BFloat16>(a, b); }
 
@@ -136,3 +234,36 @@ template <typename T> struct BlackBox_ {
     using Type = T;
 };
 template <typename T> using BlackBox = BlackBox_<T>::Type;
+
+template <int N> constexpr auto repeat_to_array(auto x) -> array<decltype(x), N>
+{
+    array<decltype(x), N> ans;
+    for (int i = 0; i < N; i++) {
+        ans[i] = x;
+    }
+    return ans;
+}
+
+template <size_t M, typename T, size_t N>
+constexpr auto slice_array(array<T, N> arr) -> array<T, M>
+{
+    static_assert(M <= N);
+    array<T, M> ans;
+    for (size_t i = 0; i < M; i++) {
+        ans[i] = arr[i];
+    }
+    return ans;
+}
+
+template <typename T, size_t N, size_t M>
+constexpr auto array_concat(array<T, N> a1, array<T, M> a2) -> array<T, N + M>
+{
+    array<T, N + M> ans;
+    for (int i = 0; i < N; i++) {
+        ans[i] = a1[i];
+    }
+    for (int i = 0; i < M; i++) {
+        ans[N + i] = a2[i];
+    }
+    return ans;
+}

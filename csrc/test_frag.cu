@@ -10,19 +10,20 @@ __global__ void test_mma_m16_n8_k16_ker(const u16* a, const u16* b, u16* c)
     int lane = threadIdx.x;
     assert_(0 <= lane && lane < 32);
 
-    auto a_frag = Frag<dtype, 8, PermA>::template load<
+    auto a_frag = Frag<dtype, 8, NoMeta, array<NoMeta, 8>{}, PermA>::template load<
         array<int, 8>{1, 2, 4, 8, 16, 32, 64, 128}, // row major
         MemCheckNone,
         false
     >(a, lane);
 
-    auto b_frag = Frag<dtype, 7, PermB>::template load<
+    auto b_frag = Frag<dtype, 7, NoMeta, array<NoMeta, 7>{}, PermB>::template load<
         array<int, 7>{8, 16, 32, 64, 1, 2, 4}, // row major
         MemCheckNone,
         false
     >(b, lane);
 
-    Frag<dtype, 7, PermC> c_frag = mma_m16_n8_k16<dtype>(a_frag, b_frag);
+    Frag<dtype, 7, NoMeta, array<NoMeta, 7>{}, PermC> c_frag =
+        mma_m16_n8_k16<dtype>(a_frag, b_frag);
 
     c_frag.template store<
         array<int, 7>{8, 16, 32, 64, 1, 2, 4}, // row major
@@ -55,6 +56,7 @@ torch::Tensor test_mma_m16_n8_k16(at::Tensor& A, at::Tensor& B)
         static_cast<const u16*>(B.data_ptr()),
         static_cast<u16*>(C.data_ptr())
     );
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     return C;
 }

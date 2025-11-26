@@ -8,7 +8,7 @@
 #include <mma.h>
 #include <torch/extension.h>
 
-template <int N> struct Perm {
+template <size_t N> struct Perm {
     array<int, N> ord;
 
     // Identity permutation of size N
@@ -32,22 +32,63 @@ template <int N> struct Perm {
         return ans;
     }
 
-    // adding represent a added premutation to a fragment
-    // a function that commutes with transposes will have signature of this form:
+    template <int M> constexpr auto extend() const -> Perm<M>
+    {
+        static_assert(M >= N);
+        Perm<M> ans = Perm<M>::ID();
+        for (int i = 0; i < N; i++) {
+            ans.ord[i] = ord[i];
+        }
+        return ans;
+    }
+
+    template <int M> constexpr auto shrink() const -> Perm<M>
+    {
+        static_assert(M <= N);
+        Perm<M> ans;
+        for (int i = M; i < N; i++) {
+            assert(ord[i] == i);
+        }
+        for (int i = 0; i < M; i++) {
+            ans.ord[i] = ord[i];
+        }
+        return ans;
+    }
+
+    // adding represent a added premutation to a fragment (see implementation)
     //
-    // template<Perm> auto func(Frag<Perm>) -> Frag<Perm + {2, 1, 0}>
-    template <int M>
+    // a layout transposition that preserve logical semantics have a
+    // signature of this form:
+    // template<Perm> auto transpose_layout(Frag<Perm>) -> Frag<Perm + {2, 1, 0}>
+    //
+    template <size_t M>
     constexpr auto operator+(const Perm<M>& p2) const -> Perm<(N > M ? N : M)>
     {
         constexpr int R = (N > M ? N : M);
-        Perm<R> out{};
+        Perm<R> p1_ = this->extend<R>();
+        Perm<R> p2_ = p2.template extend<R>();
+
+        Perm<R> out;
         for (int i = 0; i < R; ++i) {
-            const int a = (i < M) ? p2[i] : i;
-            out.ord[i] = (a < N) ? ord[a] : a;
+            out.ord[i] = p1_[p2_[i]];
         }
         return out;
     }
+
+    template <typename T> constexpr auto apply(array<T, N> arr) const -> array<T, N>
+    {
+        array<T, N> ans;
+        for (int i = 0; i < N; i++) {
+            ans[ord[i]] = arr[i];
+        }
+        return ans;
+    }
 };
+
+// nvcc type inference is failing in the transpose method with direct +
+constexpr auto perm_compose(auto p1, auto p2) /* -> inferred */ { return p1 + p2; }
+
+////////////////////////////////////////////////////////////////////////////////
 
 // for shared mem, with 32 bank model
 // how many loads does it take?
@@ -105,6 +146,8 @@ template <> struct CHECK<OK> {
 template <auto V> using CHECK_V = CHECK<decltype(V)>::OK;
 
 template <auto Val, typename MEM> struct MemCheckFailed {};
+
+////////////////////////////////////////////////////////////////////////////////
 
 template <int N> constexpr auto default_strides() -> array<int, N>
 {
@@ -205,7 +248,7 @@ __device__ __forceinline__ auto store_offsets_aligned(u16* base, array<u16, N> d
 constexpr auto is_linear(array<int, 32> offsets) -> bool
 {
     int base = offsets[0];
-    int factor = offsets[1];
+    int factor = offsets[1] - offsets[0];
     for (int i = 0; i < 32; i++) {
         if (offsets[i] != base + factor * i) {
             return false;
@@ -224,6 +267,10 @@ constexpr auto u16_to_u32_offsets(array<int, 32> offsets) -> array<int, 32>
     return ans;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
+struct NoMeta {};
+
 // ------------------------- FRAGMENT view (Frag) -----------------------------
 //
 // a nd array of shape 2x2x...x2, sharded across a warp
@@ -238,14 +285,35 @@ constexpr auto u16_to_u32_offsets(array<int, 32> offsets) -> array<int, 32>
 // i1, represent the logical index on logical axis P[6]
 // etc
 //
-template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
+template <
+    DType dtype,                                      // element dtype
+    size_t N,                                         // number of dimensions
+    typename MetaType = NoMeta,                       //
+    array<MetaType, N> AxMeta = array<MetaType, N>{}, // per logical axis metadata
+    Perm<N> P = Perm<N>::ID()                         // physical -> logical mapping
+>
+struct Frag {
     array<u16, 1 << (N - 5)> data;
 
-    static constexpr int N_ = N;
-    static constexpr Perm<N> P_ = P;
     static constexpr DType dtype_ = dtype;
+    static constexpr int N_ = N;
+    using MetaType_ = MetaType;
+    static constexpr array<MetaType, N> AxMeta_ = AxMeta;
+    static constexpr Perm<N> P_ = P;
+
+    using Self = Frag<dtype, N, MetaType, AxMeta, P>;
 
     static constexpr auto perm() -> Perm<N> { return P; }
+
+    // metadata indexed by physical axis
+    static constexpr auto physical_meta() -> array<MetaType, N>
+    {
+        array<MetaType, N> ans;
+        for (int i = 0; i < N; i++) {
+            ans[i] = AxMeta[P[i]];
+        }
+        return ans;
+    }
 
     // element_fn: function array<bool, N> -> u16
     //
@@ -253,9 +321,9 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
     // [LLM] element_fn: array<bool, N> -> u16. The first 5 axes are sourced from `lane`
     // [LLM] via P[0..4], and the remaining local axes from the per-thread index i via
     // P[5..N-1].
-    static constexpr auto create(int lane, auto element_fn) -> Frag<dtype, N, P>
+    static constexpr auto create(int lane, auto element_fn) -> Self
     {
-        Frag<dtype, N, P> out{};
+        Self out{};
 
         array<bool, N> base{};
         for (int b = 0; b < 5; ++b)
@@ -329,6 +397,15 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
         }
     }
 
+    // transpose Trans by reordering logical axis, therefore doing no actual work
+    template <Perm<N> Q>
+    using Transposed = Frag<dtype, N, MetaType, Q.apply(AxMeta), perm_compose(Q, P)>;
+
+    template <Perm<N> Q> constexpr auto transpose() -> Self::Transposed<Q>
+    {
+        return {data};
+    }
+
     static constexpr auto is_simple_trans(Perm<N> Trans) -> bool
     {
         for (int i = 0; i < 5; i++) {
@@ -341,13 +418,13 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
 
     // transpose layout without changing logical array content
     // currently only among local dimension is supported
-    template <Perm<N> Trans>
-    __device__ auto transpose_layout() -> Frag<dtype, N, P + Trans>
-    {
-        static_assert(is_simple_trans(Trans));
+    template <Perm<N> Q> using PermLayout = Frag<dtype, N, MetaType, AxMeta, P + Q>;
 
-        using Out = Frag<dtype, N, P + Trans>;
-        Out out{};
+    template <Perm<N> Q> __device__ auto transpose_layout() -> Self::PermLayout<Q>
+    {
+        static_assert(is_simple_trans(Q));
+
+        Self::PermLayout<Q> out{};
 
         constexpr int L = 1 << (N - 5);
         if constexpr (L == 1) {
@@ -358,7 +435,7 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
         // Invert Trans over full N (cheap); we only use the local part.
         array<int, N> inv{};
         for (int i = 0; i < N; ++i)
-            inv[Trans[i]] = i;
+            inv[Q[i]] = i;
 
         // For each old local index, compute its destination index by permuting
         // bit-positions.
@@ -395,12 +472,10 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
         bool PACK = true,
         typename = CHECK_V<mem_check_strides<strides, MEM>()>
     >
-    __device__ static auto load(const u16* ptr, int lane) -> Frag<dtype, N, P>
+    __device__ static auto load(const u16* ptr, int lane) -> Self
     {
-        using F = Frag<dtype, N, P>;
-
-        ptr += F::template get_lane_offset<strides, MEM>(lane);
-        constexpr auto offsets = F::get_local_offsets(strides);
+        ptr += get_lane_offset<strides, MEM>(lane);
+        constexpr auto offsets = get_local_offsets(strides);
 
         array<u16, 1 << (N - 5)> ans =
             load_offsets_aligned<offsets.size(), offsets, PACK>(ptr);
@@ -419,6 +494,106 @@ template <DType dtype, int N, Perm<N> P = Perm<N>::ID()> struct Frag {
         constexpr auto offsets = get_local_offsets(strides);
 
         store_offsets_aligned<offsets.size(), offsets, PACK>(ptr, data);
+    }
+
+    // <logical behavior>
+    // call a function with a different perm spec by
+    //   transposing, apply function, then transposing back
+    //
+    // args:
+    //   fn: function(Frag<Perm<M> ArgP>) -> Frag<Perm<M> ...>
+    //
+    // returns:
+    //   T_inv(fn(T(this)))
+    //
+    //  T is logical transpose that does no physical work:
+    //   T[logical axis mapping]:= (ArgP[0] -> P[0], ArgP[1] -> P[1], ...)
+    //
+    // if N is larger M, this function extends fn:
+    // the rest of the dimensions are batch dims.
+    //
+    // <physical behavior>
+    //
+    // fn is a function with the wrong axis ordering.
+    // we apply it to argument arr anyways pretending it is right,
+    // and give a reasonable output axis labeling.
+    //
+    template <int M, Perm<M> ArgP = Perm<M>::ID()>
+    __host__ __device__ __forceinline__ constexpr auto apply_transposed(
+        auto fn
+    ) /* -> inferred */
+    {
+        static_assert(M <= N);
+        static_assert(M >= 5, "apply_transposed requires M >= 5 (at least 5 lane dims).");
+
+        // T maps our current layout P to ArgP (extended to N) without moving data.
+        // We want (P + T)[i] == ArgP[i] for i < M, and identity for i >= M.
+        constexpr Perm<N> T = ArgP.template extend<N>() + P.inv();
+
+        // Logical transpose into the ArgP basis (no data movement).
+        auto self_trans = this->template transpose<T>();
+        using ArgT_ = decltype(self_trans);
+
+        // Ensure we matched the requested ArgP on the first M logical axes.
+        []() consteval {
+            for (int i = 0; i < M; i++) {
+                assert(ArgT_::P_[i] == ArgP[i]);
+            }
+        }();
+
+        // Argument type expected by fn (first M axes only).
+        using ArgT = Frag<dtype, M, MetaType, slice_array<M>(ArgT_::AxMeta_), ArgP>;
+
+        // Result type of fn; must also be M-dimensional.
+        using RetT = decltype(fn(std::declval<ArgT>()));
+        static_assert(RetT::N_ == M);
+
+        // Pre-inverse-transpose output meta: first M axes from RetT, batch axes from
+        // ArgT_.
+        constexpr auto OutAxMetaPre = []() {
+            array<MetaType, N> out{};
+            for (int i = 0; i < M; ++i)
+                out[i] = RetT::AxMeta_[i];
+            for (int i = M; i < N; ++i)
+                out[i] = ArgT_::AxMeta_[i];
+            return out;
+        }();
+
+        // Pre-inverse-transpose output perm: RetT perm extended with identity on batch
+        // axes.
+        constexpr Perm<N> OutPermPre = RetT::P_.template extend<N>();
+
+        using OutPre = Frag<dtype, N, MetaType, OutAxMetaPre, OutPermPre>;
+        OutPre out_pre{};
+
+        // Local element counts.
+        constexpr int L_small = 1 << (M - 5); // per-thread elements for M dims
+        constexpr int B_bits =
+            N - M; // number of batch local bits (all local, since M >= 5)
+        constexpr int B_count = 1 << B_bits;
+
+        // For each batch-slice, extract M-dim arg, call fn, and insert back.
+        for (int b = 0; b < B_count; ++b) {
+            ArgT arg_small{};
+            // Extract slice from self_trans into arg_small.
+            for (int i = 0; i < L_small; ++i) {
+                int idx_big = i | (b << (M - 5));
+                arg_small.data[i] = self_trans.data[idx_big];
+            }
+
+            // Apply fn on the M-dim slice.
+            auto ret_small = fn(arg_small);
+
+            // Stitch back into out_pre at the same batch offset.
+            for (int i = 0; i < L_small; ++i) {
+                int idx_big = i | (b << (M - 5));
+                out_pre.data[idx_big] = ret_small.data[i];
+            }
+        }
+
+        // Finally, invert the initial logical transpose to return to the original basis.
+        constexpr Perm<N> T_inv = T.inv();
+        return out_pre.template transpose<T_inv>();
     }
 };
 
@@ -442,11 +617,18 @@ constexpr Perm<7> PermC = {5, 6, 0, 1, 2, /**/ 4, 3};
 // Applies a tensor core mma,
 // labeling axis according to nvidia swizzle and therefore
 // delegating swizzling to the caller
-template <DType dtype>
+template <DType dtype, typename MetaType, array<MetaType, 8> MA, array<MetaType, 7> MB>
 __device__ __forceinline__ auto mma_m16_n8_k16(
-    Frag<dtype, 8, PermA> A,
-    Frag<dtype, 7, PermB> B
-) -> Frag<dtype, 7, PermC>
+    Frag<dtype, 8, MetaType, MA, PermA> A,
+    Frag<dtype, 7, MetaType, MB, PermB> B
+)
+    -> Frag<
+        dtype,
+        7,
+        MetaType,
+        array<MetaType, 7>{MA[4], MA[5], MA[6], MA[7], MB[4], MB[5], MB[6]},
+        PermC
+    >
 {
     // Pack A (8 scalars -> 4x b16x2), B (4 scalars -> 2x b16x2).
     array<u32, 4> a{
@@ -500,64 +682,4 @@ __device__ __forceinline__ auto mma_m16_n8_k16(
     // Unpack C per-lane in hardware order: i={0,1,2,3} => {lo(c0), hi(c0), lo(c1),
     // hi(c1)}.
     return {{lo16(c0), hi16(c0), lo16(c1), hi16(c1)}};
-}
-
-// <logical behavior>
-// call a function with a different perm spec by
-//   transposing, apply function, then transposing back
-//
-// args:
-//   fn: function(Frag<Perm<N> P_fn>) -> Frag<Perm<N> any>
-//   arr: Frag<Perm<M> P_arr>
-//
-// returns:
-//   T_inv(fn(T(arr)))
-//
-//  T is logical transpose that does no physical work:
-//   T[logical axis mapping]:= (P_fn[0] -> P_arr[0], P_fn[1] -> P_arr[1], ...)
-//
-// if N is larger M, this function extends fn:
-// the rest of the dimensions are batch dims.
-//
-// <physical behavior>
-//
-// fn is a function with the wrong axis ordering.
-// we apply it to argument arr anyways pretending it is right,
-// and give a reasonable output axis labeling.
-//
-template <int N, Perm<N> P_fn = Perm<N>::ID(), int M, Perm<M> P_arr, DType dtype>
-__host__ __device__ __forceinline__ constexpr auto apply_transposed(
-    Frag<dtype, M, P_arr> arr,
-    auto fn
-)
-{
-    static_assert(N <= M);
-
-    using ArgT = Frag<dtype, N, P_fn>;
-
-    constexpr Perm<N> P_fn_out = decltype(fn(std::declval<ArgT>()))::perm();
-    constexpr Perm<M> out_perm = P_arr + P_fn.inv() + P_fn_out;
-
-    constexpr int D = 1 << (M - N); // batch dimensions
-    constexpr int S = 1 << (N - 5); // #count of u16
-    static_assert(arr.data.size() == D * S);
-
-    using OutType = Frag<dtype, M, out_perm>;
-    OutType ans;
-
-    for (int i = 0; i < D; i++) {
-        ArgT sub_mat;
-
-        for (int j = 0; j < S; j++) {
-            sub_mat.data[j] = arr.data[S * i + j];
-        }
-
-        Frag<dtype, N, P_fn_out> res = fn(sub_mat);
-
-        for (int j = 0; j < S; j++) {
-            ans.data[S * i + j] = res.data[j];
-        }
-    }
-
-    return ans;
 }

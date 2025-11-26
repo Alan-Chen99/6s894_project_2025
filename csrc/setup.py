@@ -21,6 +21,8 @@ setup(
                 # "hadamard_transform_cuda.cu",
                 "main.cu",
                 "test_frag.cu",
+                # "tmp.cu",
+                "test_bit.cu",
             ],
             extra_compile_args={
                 "cxx": [
@@ -38,6 +40,8 @@ setup(
                     "-diag-suppress=3189",
                     # get ptx files in ./build
                     "--keep",
+                    #
+                    # "-fsyntax-only",
                 ]
                 + versions,
             },

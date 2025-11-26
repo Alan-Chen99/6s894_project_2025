@@ -92,4 +92,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         py::arg("x"),
         py::arg("y")
     );
+
+    m.def("test_bit_convert", &test_bit_convert, "test_bit_convert", py::arg("x"));
 }

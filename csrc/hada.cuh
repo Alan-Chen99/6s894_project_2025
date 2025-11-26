@@ -2,42 +2,67 @@
 
 #include "frag.cuh"
 
-template <DType dtype> constexpr u16 quarter_pos_bits()
-{
-    if constexpr (dtype == DType::Half)
-        return static_cast<u16>(0x3400); // 0.25 in f16
-    else
-        return static_cast<u16>(0x3E80); // 0.25 in bf16
-}
-// -1/4
-template <DType dtype> constexpr u16 quarter_neg_bits()
-{
-    return static_cast<u16>(quarter_pos_bits<dtype>() | 0x8000u);
-}
+enum AxSpec {
+    Id, // do nothing on the axis. it will effectively serve as a batch axis.
+    Rot // apply a hadamard transform
+};
 
-template <DType dtype, int N, Perm<N * 2> P>
-__forceinline__ constexpr auto create_hada_A(int lane) -> Frag<dtype, N * 2, P>
+template <DType dtype, int N, array<AxSpec, N> spec, Perm<N * 2> P>
+__forceinline__ constexpr auto create_hada_A(int lane)
+    -> Frag<dtype, N * 2, AxSpec, array_concat(spec, repeat_to_array<N>(AxSpec::Id)), P>
 {
-    return Frag<dtype, N * 2, P>::create(
-        lane, //
-        [](array<bool, N * 2> coord) -> u16 {
-            int ans = 0;
-            for (int i = 0; i < N; i++) {
-                if (coord[i] && coord[i + N]) {
-                    ans++;
+    return Frag<
+        dtype,
+        N * 2,
+        AxSpec,
+        array_concat(spec, repeat_to_array<N>(AxSpec::Id)),
+        P
+    >::
+        create(
+            lane, //
+            [](array<bool, N * 2> coord) -> u16 {
+                // Count Rot axes
+                constexpr int R = []() constexpr {
+                    int c = 0;
+                    for (int i = 0; i < N; ++i)
+                        if (spec[i] == AxSpec::Rot)
+                            ++c;
+                    return c;
+                }();
+
+                // 2^(-R/2) = (0.5)^(R/2) * (1/sqrt(2))^(R%2)
+                constexpr float inv_sqrt2 = 0.7071067811865475244f;
+                constexpr float scale_val = []() constexpr {
+                    float s = 1.0f;
+                    for (int i = 0; i < (R / 2); ++i)
+                        s *= 0.5f;
+                    if (R & 1)
+                        s *= inv_sqrt2;
+                    return s;
+                }();
+                constexpr u16 s_pos = f32_to_dtype<dtype>(scale_val);
+                constexpr u16 s_neg = f32_to_dtype<dtype>(-scale_val);
+
+                // coord[0..N-1] = k bits, coord[N..2N-1] = m bits
+                // Id axes: Kronecker delta (k_i == m_i), otherwise 0
+                // Rot axes: contribute (-1)^{k_i & m_i} to the sign
+                int parity = 0;
+                for (int i = 0; i < N; ++i) {
+                    bool ki = coord[i];
+                    bool mi = coord[i + N];
+                    if (spec[i] == AxSpec::Id) {
+                        if (ki != mi) {
+                            return static_cast<u16>(0);
+                        }
+                    } else { // AxSpec::Rot
+                        if (ki && mi) {
+                            parity ^= 1;
+                        }
+                    }
                 }
+                return (parity == 0) ? s_pos : s_neg;
             }
-
-            constexpr u16 qpos = quarter_pos_bits<dtype>();
-            constexpr u16 qneg = quarter_neg_bits<dtype>();
-
-            if (ans % 2 == 0) {
-                return qpos;
-            } else {
-                return qneg;
-            }
-        }
-    );
+        );
 }
 
 constexpr auto test_collect(auto cb)
@@ -45,6 +70,34 @@ constexpr auto test_collect(auto cb)
     array<decltype(cb(0)), 32> ans;
     for (int i = 0; i < 32; i++) {
         ans[i] = cb(i);
+    }
+    return ans;
+}
+
+template <DType dtype, array<AxSpec, 7> spec>
+__device__ auto hada_rot_4_impl(Frag<dtype, 7, AxSpec, spec, PermB> arr, int lane)
+    -> Frag<
+        dtype,
+        7,
+        AxSpec,
+        array<
+            AxSpec,
+            7
+        >{AxSpec::Id, AxSpec::Id, AxSpec::Id, AxSpec::Id, spec[4], spec[5], spec[6]},
+        PermC
+    >
+{
+    auto A = create_hada_A<dtype, 4, slice_array<4>(spec), PermA>(lane);
+    // Had rot on the first 4 logical axis
+    return mma_m16_n8_k16<dtype>(A, arr);
+}
+
+template <size_t N>
+constexpr auto hada_rot_4_axis(array<AxSpec, N> spec, Perm<N> P) -> array<AxSpec, N>
+{
+    array<AxSpec, N> ans = spec;
+    for (auto x : {0, 1, 5, 6}) {
+        ans[P[x]] = AxSpec::Id;
     }
     return ans;
 }
@@ -61,55 +114,54 @@ constexpr auto test_collect(auto cb)
 // apply rotation passing first 7 axis to tensor core,
 // and using the rest as batch dim
 //
-template <DType dtype, int N, Perm<N> P>
-__device__ auto hada_rot_4(Frag<dtype, N, P> arr, int lane)
-    -> BlackBox<Frag<dtype, N, P + Perm<7>{3, 4, 5, 0, 1, 2, 6}>>
+template <
+    //
+    DType dtype,
+    size_t N,
+    array<AxSpec, N> spec,
+    Perm<N> P
+>
+__device__ auto hada_rot_4(Frag<dtype, N, AxSpec, spec, P> arr, int lane) -> BlackBox<
+    Frag<dtype, N, AxSpec, hada_rot_4_axis(spec, P), P + Perm<7>{3, 4, 5, 0, 1, 2, 6}>
+>
 {
-    auto ans = apply_transposed<7, PermB>(arr, [&](Frag<dtype, 7, PermB> frag) {
-        auto A = create_hada_A<dtype, 4, PermA>(lane);
-
-        // Had rot on the first 4 logical axis of frag
-        return mma_m16_n8_k16<dtype>(A, frag);
+    auto ans = arr.template apply_transposed<7, PermB>([&](auto frag) {
+        return hada_rot_4_impl(frag, lane);
     });
+    return ans;
+}
 
-    // we logically transposed id({0, 1, 2, 3, 4, 5, 6}) -> PermB({3, 4, 5, 0, 1, 2, 6})
-    // so we actually rotated {0, 1, 5, 6}
+template <size_t N>
+constexpr auto hada_rot_8_axis(array<AxSpec, N> spec, Perm<N> P) -> array<AxSpec, N>
+{
+    array<AxSpec, N> ans = spec;
+    for (int i = 0; i < 8; i++) {
+        ans[P[i]] = AxSpec::Id;
+    }
     return ans;
 }
 
 // rotate first 8 axis: P[0], P[1], ...
-//
-template <DType dtype, int N, Perm<N> P>
-__device__ auto hada_rot_8(Frag<dtype, N, P> arr, int lane) -> Frag<dtype, N, P>
+template <
+    //
+    DType dtype,
+    size_t N,
+    array<AxSpec, N> spec,
+    Perm<N> P
+>
+__device__ auto hada_rot_8(Frag<dtype, N, AxSpec, spec, P> arr, int lane)
+    -> Frag<dtype, N, AxSpec, hada_rot_8_axis(spec, P), P>
 {
-    auto ans = apply_transposed<8>(arr, [&](Frag<dtype, 8> frag) {
-        // /**/ marked axis are rotated
-        Frag<dtype, 8, Perm<8>{3, 4, 5 /**/, 0 /**/, 1 /**/, 2, 6 /**/, 7}> tmp1 =
-            // roates position [0, 1, 5, 6]
-            hada_rot_4(frag, lane);
+    return arr.template apply_transposed<N>([&](auto frag) {
+        // {0, 0, 1, 1, 1, 0, 0, 1}, {3, 4, 5, 0, 1, 2, 6, 7}
+        auto tmp1 = hada_rot_4(frag, lane);
 
-        Frag<dtype, 8, Perm<8>{3, 4, 5 /**/, 0 /**/, 1 /**/, 2, 7, 6 /**/}> tmp2 =
-            tmp1.template transpose_layout<Perm<8>{0, 1, 2, 3, 4, 5, 7, 6}>();
+        // {0, 0, 1, 1, 1, 0, 0, 1}, {3, 4, 5, 0, 1, 2, 7, 6}
+        auto tmp2 = tmp1.template transpose_layout<Perm<8>{0, 1, 2, 3, 4, 5, 7, 6}>();
 
-        // all is rotated now
-        Frag<dtype, 8, Perm<8>{0, 1, 2, 3, 4, 5, 7, 6}> tmp3 = hada_rot_4(tmp2, lane);
+        // {0, 0, 0, 0, 0, 0, 0, 0}, {0, 1, 2, 3, 4, 5, 7, 6}
+        auto tmp3 = hada_rot_4(tmp2, lane);
 
-        // not mandatory but its free to make it identity
         return tmp3.template transpose_layout<Perm<8>{0, 1, 2, 3, 4, 5, 7, 6}>();
     });
-
-    return ans;
-}
-
-__device__ void testfn(Frag<DType::BFloat16, 9> arr)
-{
-    auto blah = hada_rot_4(arr, 0);
-
-    // constexpr auto ans = create_hada_A<DType::Half, 4, PermA>(0);
-
-    // constexpr auto test = test_collect([](int lane) {
-    //     return create_hada_A<DType::Half, 4, PermA>(lane).data;
-    // });
-
-    // // Dummy2<test>::x x;
 }
