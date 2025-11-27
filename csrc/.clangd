@@ -9,6 +9,7 @@ Hover:
 CompileFlags:
   Add:
     - "--cuda-gpu-arch=sm_80"
+    - "--gcc-toolchain=/orcd/software/core/001/spack/pkg/gcc/12.2.0/yt6vabm"
     - "-std=c++20"
     - "-Wno-class-conversion"
     - "-DCLANGD=1"

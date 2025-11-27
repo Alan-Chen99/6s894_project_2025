@@ -108,12 +108,12 @@ __device__ __forceinline__ u16 lo16(u32 x) { return static_cast<u16>(x & 0xFFFFu
 __device__ __forceinline__ u16 hi16(u32 x) { return static_cast<u16>(x >> 16); }
 
 template <std::size_t... Is, typename F>
-__host__ __device__ void static_for_impl(std::index_sequence<Is...>, F&& f)
+__host__ __device__ constexpr void static_for_impl(std::index_sequence<Is...>, F&& f)
 {
     (f.template operator()<Is>(), ...);
 }
 
-template <std::size_t N, typename F> __host__ __device__ void static_for(F&& f)
+template <std::size_t N, typename F> __host__ __device__ constexpr void static_for(F&& f)
 {
     static_for_impl(std::make_index_sequence<N>{}, std::forward<F>(f));
 }

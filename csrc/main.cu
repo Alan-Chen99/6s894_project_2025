@@ -57,18 +57,19 @@ __device__ auto load_rot_8(const u16* in, u16* sm, int lane) -> void
     });
 }
 
+// rotate 0..9 except 3, 4
 template <
     DType dtype,
     int N,
     int P // # of cp.async pipeline at once
 >
-__device__ auto load_rot_10(const u16* in, u16* sm, int lane) -> void
+__device__ auto load_rot_8_11(const u16* in, u16* sm, int lane) -> void
 {
     static_for<N + P>([&]<int I>() {
         if constexpr (I < N) {
-            // copy 1024 contiguous elements
-            for (int i = 0; i < 4; i++) {
-                int offset = I * 1024 + 256 * i + lane * 8;
+            // copy 2048 contiguous elements
+            for (int i = 0; i < 8; i++) {
+                int offset = I * 2048 + 256 * i + lane * 8;
                 cp_async16(sm + offset, in + offset);
             }
             async_commit_group();
@@ -81,41 +82,57 @@ __device__ auto load_rot_10(const u16* in, u16* sm, int lane) -> void
             async_wait_pending<ongoing - idx - 1>();
             __syncwarp();
 
-            u16* data = sm + idx * 1024;
+            u16* data = sm + idx * 2048;
 
-            constexpr auto perm = Perm<10>{
-                3,
+            constexpr array<AxSpec, 11> spec = []() consteval {
+                array<AxSpec, 11> spec = repeat_to_array<11>(AxSpec::Id);
+                // 6, 7, 8, 9, 10: must rotate
+                for (int i = 6; i < 11; i++) {
+                    spec[i] = AxSpec::Rot;
+                }
+                for (int ax : {0, 1, 2}) {
+                    spec[ax] = AxSpec::Rot;
+                }
+
+                return spec;
+            }();
+
+            constexpr auto perm = Perm<11>{
                 4,
                 5,
                 6,
                 7,
+                8,
                 // local, assign one axis to pack to u32
                 0,
-                8,
                 9,
+                10,
                 1,
                 2,
+                3,
             };
 
             auto in_reg = Frag<
                 dtype,
-                10,
+                11,
                 AxSpec,
-                repeat_to_array<10>(AxSpec::Rot),
+                spec,
                 perm
             >::
                 template load<
-                    default_strides<10>(), //
-                    SmBankCount<1>,
+                    default_strides<11>(), //
+                    SmBankCount<2>,
                     8
                 >(data, lane);
 
             auto out_reg = hada_rot_all(in_reg, lane);
+            // typename Dummy<decltype(out_reg)>::x x;
 
-            // Dummy<decltype(out_reg)>::x x;
+            static_assert(rot_finished(out_reg.AxMeta_));
+
             out_reg.template store<
-                default_strides<10>(), //
-                SmBankCount<1>,
+                default_strides<11>(), //
+                SmBankCount<2>,
                 8
             >(data, lane);
         }
@@ -261,61 +278,65 @@ struct RowHandler<dtype, N> {
 
         extern __shared__ u16 sm[];
 
-        load_rot_10<dtype, 32, 3>(in, sm, lane);
+        load_rot_8_11<dtype, 16, 8>(in, sm, lane);
 
         __syncwarp();
 
-#pragma unroll
-        for (int i = 0; i < 16; i++) {
+        for (int i = 0; i < 32; i++) {
+            // 6..10
             u16* base_in = sm + 64 * i;
             u16* global_out = out + 64 * i;
 
-            constexpr array<int, 11> strides = {
+            constexpr array<int, 10> strides = {
                 1 << 0,  // 0: Id
                 1 << 1,  // 1: Id
-                1 << 2,  // 2: Id
-                1 << 3,  // 3: Id
+                1 << 2,  // 2:
+                1 << 3,  // 3:
                 1 << 4,  // 4: Id
                 1 << 5,  // 5: Id
-                1 << 10, // 10:
                 1 << 11, // 11:
                 1 << 12, // 12:
                 1 << 13, // 13:
                 1 << 14, // 14:
             };
 
-            constexpr array<AxSpec, 11> spec = []() consteval {
-                array<AxSpec, 11> spec = repeat_to_array<11>(AxSpec::Id);
-
-                for (int i = 6; i < 11; i++) {
+            constexpr array<AxSpec, 10> spec = []() consteval {
+                array<AxSpec, 10> spec = repeat_to_array<10>(AxSpec::Id);
+                // required
+                for (int i = 6; i < 10; i++) {
                     spec[i] = AxSpec::Rot;
+                }
+                // ones not taken by load_rot_8_11
+                for (int ax : {3, 4, 5}) {
+                    spec[ax] = AxSpec::Rot;
                 }
                 return spec;
             }();
 
             auto in_reg = Frag<
                 dtype,
-                11,
+                10,
                 AxSpec,
                 spec,
-                Perm<11>{
+                Perm<10>{
                     3,
                     4,
                     5,
                     6,
                     7,
+                    //
                     0, // packing
                     8,
                     9,
-                    10,
                     1,
                     2,
                 }
             >::template load<strides, SmBankCount<1>, 8>(base_in, lane);
 
-            auto out_reg = hada_rot_all(in_reg, lane);
-            // Dummy<decltype(out_reg)>::x x;
+            auto out_reg = hada_rot_8(in_reg, lane);
             static_assert(rot_finished(out_reg.AxMeta_));
+
+            // Dummy<decltype(out_reg)>::x x;
 
             out_reg.template store<strides, SmBankCount<1>, 8>(global_out, lane);
         }

@@ -131,7 +131,7 @@ test_sizes_m = [1 << 15]
 
 # test_elem_counts = [1 << i for i in range(9, 26, 1)]  # 32MB # 64MB # 2**28 = 256M
 # test_elem_counts = [1 << 27, 1 << 28]  # 32MB # 64MB # 2**28 = 256M
-test_elem_counts = [1 << 28]  # 32MB # 64MB # 2**28 = 256M
+test_elem_counts = [1 << 29, 1 << 30]
 
 
 @dataclass
@@ -139,7 +139,7 @@ class TestConfig:
     """Configuration for the test suite."""
 
     check: bool = False
-    runs_per_size: int = 20
+    runs_per_size: int = 200
     json_output_file: str | None = f"benchmark_{datetime.now():%Y-%m-%d_%H-%M-%S}.json"
 
     benchmark_cases: list[str] = field(default_factory=lambda: list(CASES.keys()))
@@ -159,44 +159,43 @@ def _run_checks(
     target: BenchmarkTarget,
     atol_map: dict[torch.dtype, float],
 ) -> None:
-    for _ in range(cfg.runs_per_size):
-        for dtype in cfg.dtypes:
-            a_result = a.clone().to(dtype)
-            a_truth = a.clone().to(dtype)
+    for dtype in cfg.dtypes:
+        a_result = a.clone().to(dtype)
+        a_truth = a.clone().to(dtype)
 
-            target.call(a_result)
-            target.call_ref(a_truth)
+        target.call(a_result)
+        target.call_ref(a_truth)
 
-            atol = atol_map.get(dtype, 1e-2)
-            success = torch.allclose(a_truth, a_result, atol=atol, rtol=0)
-            if success:
-                continue
+        atol = atol_map.get(dtype, 1e-2)
+        success = torch.allclose(a_truth, a_result, atol=atol, rtol=0)
+        if success:
+            continue
 
-            torch.set_printoptions(threshold=100)
-            print(f"Failed test: {m}x{n}")
-            print("Input:")
-            print(a)
-            print("Expected:")
-            print(a_truth)
-            print("Got:")
-            print(a_result)
+        torch.set_printoptions(threshold=100)
+        print(f"Failed test: {m}x{n}")
+        print("Input:")
+        print(a)
+        print("Expected:")
+        print(a_truth)
+        print("Got:")
+        print(a_result)
 
-            diff = torch.abs(a_truth - a_result)
-            print("diff:", diff)
-            # print("diff:", diff.tolist())
+        diff = torch.abs(a_truth - a_result)
+        print("diff:", diff)
+        # print("diff:", diff.tolist())
 
-            max_diff = torch.max(diff)
-            print(f"Max diff: {max_diff}")
+        max_diff = torch.max(diff)
+        print(f"Max diff: {max_diff}")
 
-            flat_idx = torch.argmax(diff)
-            coords = torch.unravel_index(flat_idx, diff.shape)
-            print(f"Max diff index: {[x.item() for x in coords]}")
+        flat_idx = torch.argmax(diff)
+        coords = torch.unravel_index(flat_idx, diff.shape)
+        print(f"Max diff index: {[x.item() for x in coords]}")
 
-            # diff_input = torch.abs(a.to(a_result.dtype) - a_result)
-            # max_diff_input = torch.max(diff_input)
-            # print(f"Max diff input: {max_diff_input}")
-            print()
-            raise SystemExit(1)
+        # diff_input = torch.abs(a.to(a_result.dtype) - a_result)
+        # max_diff_input = torch.max(diff_input)
+        # print(f"Max diff input: {max_diff_input}")
+        print()
+        raise SystemExit(1)
 
 
 def _run_perf(
