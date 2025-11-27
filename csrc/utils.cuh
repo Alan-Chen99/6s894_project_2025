@@ -136,6 +136,34 @@ template <DType dtype> __device__ __forceinline__ u16 sub16(u16 x, u16 y)
     return std::bit_cast<u16>(ans);
 }
 
+// Pairwise add of two packed scalars (lo, hi) in one 32-bit register.
+// Returns elementwise sum in packed form.
+// For fp16: add.f16x2
+// For bf16: add.rn.bf16x2 (requires sm_80+)
+template <DType dtype> __device__ __forceinline__ u32 add16x2(u32 a, u32 b)
+{
+    u32 r;
+    if constexpr (dtype == DType::Half) {
+        asm volatile("add.f16x2 %0, %1, %2;\n" : "=r"(r) : "r"(a), "r"(b));
+    } else {
+        // bfloat16
+        asm volatile("add.rn.bf16x2 %0, %1, %2;\n" : "=r"(r) : "r"(a), "r"(b));
+    }
+    return r;
+}
+
+// Packed subtract: (lo,hi) = (a.lo - b.lo, a.hi - b.hi)
+template <DType dtype> __device__ __forceinline__ u32 sub16x2(u32 a, u32 b)
+{
+    u32 r;
+    if constexpr (dtype == DType::Half) {
+        asm volatile("sub.f16x2 %0, %1, %2;\n" : "=r"(r) : "r"(a), "r"(b));
+    } else {
+        asm volatile("sub.rn.bf16x2 %0, %1, %2;\n" : "=r"(r) : "r"(a), "r"(b));
+    }
+    return r;
+}
+
 ////////////////////////////////////////////////////////////
 // LLM generated function to constexpr convert f32 to f16/bf16
 

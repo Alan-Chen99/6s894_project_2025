@@ -213,29 +213,31 @@ __device__ __forceinline__ auto hada_rot_axis_local(Frag<dtype, N, AxSpec, spec,
     -> Frag<dtype, N, AxSpec, hada_rot_axis_local_spec<N>(spec, P, K), P>
 {
     static_assert(K >= 5 && K < N, "Axis must be a local (>=5) physical axis and < N");
+    static_assert(K != 5, "TODO");
 
     array<u16, 1 << (N - 5)> out{};
 
-    constexpr int L = 1 << (N - 5);    // elements per thread
-    constexpr int bit = K - 5;         // local bit position in data[] index
-    constexpr int stride = 1 << bit;   // pair distance along that axis
-    constexpr int block = stride << 1; // block size for the butterfly
+    constexpr int L = 1 << (N - 5);      // elements per thread
+    constexpr int stride = 1 << (K - 5); // pair distance along that axis
+    constexpr int block = stride * 2;    // block size for the butterfly
 
 #pragma unroll
     for (int base = 0; base < L; base += block) {
 #pragma unroll
-        for (int j = 0; j < stride; ++j) {
+        for (int j = 0; j < stride; j += 2) {
             int i0 = base + j;
             int i1 = i0 + stride;
 
-            u16 x0 = arr.data[i0];
-            u16 x1 = arr.data[i1];
+            u32 x0 = pack_b16x2(arr.data[i0], arr.data[i0 + 1]);
+            u32 x1 = pack_b16x2(arr.data[i1], arr.data[i1 + 1]);
 
-            u16 y0 = add16<dtype>(x0, x1);
-            u16 y1 = sub16<dtype>(x0, x1);
+            u32 y0 = add16x2<dtype>(x0, x1);
+            u32 y1 = sub16x2<dtype>(x0, x1);
 
-            out[i0] = y0;
-            out[i1] = y1;
+            out[i0] = lo16(y0);
+            out[i0 + 1] = hi16(y0);
+            out[i1] = lo16(y1);
+            out[i1 + 1] = hi16(y1);
         }
     }
     return {out};
