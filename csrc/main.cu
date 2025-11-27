@@ -263,8 +263,8 @@ struct RowHandler<dtype, N> {
 };
 
 template <DType dtype, int N>
-// requires(12 < N && N <= 15)
-    requires(N == 15)
+    requires(12 < N && N <= 15)
+// requires(N == 15)
 struct RowHandler<dtype, N> {
     static constexpr int log_elem_count = 15;
     static constexpr int rows_per_block = 1;
@@ -303,7 +303,7 @@ struct RowHandler<dtype, N> {
             constexpr array<AxSpec, 10> spec = []() consteval {
                 array<AxSpec, 10> spec = repeat_to_array<10>(AxSpec::Id);
                 // required
-                for (int i = 6; i < 10; i++) {
+                for (int i = 6; i < N - 5; i++) {
                     spec[i] = AxSpec::Rot;
                 }
                 // ones not taken by load_rot_8_11
@@ -418,8 +418,8 @@ auto run_fht(
 
             constexpr bool supported = (
                 //
-                // I == 8 || (8 < I && I <= 12) || (I == 15)
-                I == 8 || I == 12 || I == 15
+                I == 8 || (8 < I && I <= 12) || (12 < I && I <= 15)
+                // I == 8 || I == 12 || I == 15
             );
 
             if constexpr (supported) {
