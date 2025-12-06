@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cuda_runtime.h>
 #include <mma.h>
+#include <utility>
 
 using u8 = uint8_t;
 using u16 = uint16_t;
@@ -64,6 +65,35 @@ constexpr float INV_SQRT2 = 0.7071067811865475244f;
 
 template <typename T> constexpr auto div_ceil(T x, T y) -> T { return (x + y - 1) / y; }
 
+template <size_t... Is, typename F>
+__host__ __device__ constexpr void static_for_impl(std::index_sequence<Is...>, F&& f)
+{
+    (f.template operator()<Is>(), ...);
+}
+
+template <size_t N, typename F> __host__ __device__ constexpr void static_for(F&& f)
+{
+    static_for_impl(std::make_index_sequence<N>{}, std::forward<F>(f));
+}
+
+template <typename T> constexpr auto declval_() -> T {}
+
+template <size_t... Is, typename F>
+__host__ __device__ constexpr void static_switch_impl(
+    std::index_sequence<Is...>,
+    int n,
+    F&& f
+)
+{
+    ((Is == n ? (f.template operator()<Is>(), 0) : 0), ...);
+}
+
+template <int N, typename F>
+__host__ __device__ constexpr void static_switch(int n, F&& f)
+{
+    static_switch_impl(std::make_index_sequence<N>{}, n, std::forward<F>(f));
+}
+
 ////////////////////////////////////////
 
 __device__ __forceinline__ void async_commit_group()
@@ -74,6 +104,13 @@ __device__ __forceinline__ void async_commit_group()
 template <int N> __device__ __forceinline__ void async_wait_pending()
 {
     asm volatile("cp.async.wait_group %0;\n" ::"n"(N));
+}
+
+// n is [0, MAX]
+template <int MAX> __device__ __forceinline__ void async_wait_pending_dyn(int n)
+{
+    assert_(0 <= n && n <= MAX);
+    static_switch<MAX + 1>(n, [&]<int I>() -> void { async_wait_pending<I>(); });
 }
 
 // copy 16 bytes between 16-byte aligned pointers
@@ -113,17 +150,6 @@ __device__ __forceinline__ u32 pack_b16x2(u16 lo, u16 hi)
 }
 __device__ __forceinline__ u16 lo16(u32 x) { return static_cast<u16>(x & 0xFFFFu); }
 __device__ __forceinline__ u16 hi16(u32 x) { return static_cast<u16>(x >> 16); }
-
-template <std::size_t... Is, typename F>
-__host__ __device__ constexpr void static_for_impl(std::index_sequence<Is...>, F&& f)
-{
-    (f.template operator()<Is>(), ...);
-}
-
-template <std::size_t N, typename F> __host__ __device__ constexpr void static_for(F&& f)
-{
-    static_for_impl(std::make_index_sequence<N>{}, std::forward<F>(f));
-}
 
 template <DType dtype> __device__ __forceinline__ u16 add16(u16 x, u16 y)
 {

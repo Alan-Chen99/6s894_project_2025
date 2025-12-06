@@ -3,9 +3,6 @@
 #include "frag.cuh"
 #include "hada.cuh"
 #include "utils.cuh"
-#include <c10/cuda/CUDAException.h>
-#include <c10/util/Exception.h>
-#include <cstdio>
 
 /////////////////////////////////////////////////
 
@@ -22,8 +19,8 @@ __device__ auto load_rot_8(const u16* in, u16* sm, int lane) -> void
 {
     static_assert(S2 <= S1);
 
-    static_for<N + P>([&]<int I>() {
-        if constexpr (I < N) {
+    for (int I = 0; I < N + P; I++) {
+        if (I < N) {
             cp_async16(
                 sm + I * S1 + lane * 8, // shared: stride S
                 in + I * 256 + lane * 8 // gobal: stride 256
@@ -31,11 +28,11 @@ __device__ auto load_rot_8(const u16* in, u16* sm, int lane) -> void
             async_commit_group();
         }
 
-        if constexpr (P <= I) {
-            constexpr int idx = I - P;
-            constexpr int ongoing = std::min(I + 1, N);
+        if (P <= I) {
+            int idx = I - P;
+            int ongoing = std::min(I + 1, N);
 
-            async_wait_pending<ongoing - idx - 1>();
+            async_wait_pending_dyn<P>(ongoing - idx - 1);
             __syncwarp();
 
             u16* data_in = sm + idx * S1;
@@ -51,7 +48,7 @@ __device__ auto load_rot_8(const u16* in, u16* sm, int lane) -> void
             auto out_reg = hada_rot_8(in_reg, lane);
             out_reg.store(data_out, lane);
         }
-    });
+    }
 }
 
 // rotate 0..9 except 3, 4
@@ -62,8 +59,8 @@ template <
 >
 __device__ auto load_rot_8_11(const u16* in, u16* sm, int lane) -> void
 {
-    static_for<N + P>([&]<int I>() {
-        if constexpr (I < N) {
+    for (int I = 0; I < N + P; I++) {
+        if (I < N) {
             // copy 2048 contiguous elements
             for (int i = 0; i < 8; i++) {
                 int offset = I * 2048 + 256 * i + lane * 8;
@@ -72,11 +69,11 @@ __device__ auto load_rot_8_11(const u16* in, u16* sm, int lane) -> void
             async_commit_group();
         }
 
-        if constexpr (P <= I) {
-            constexpr int idx = I - P;
-            constexpr int ongoing = std::min(I + 1, N);
+        if (P <= I) {
+            int idx = I - P;
+            int ongoing = std::min(I + 1, N);
 
-            async_wait_pending<ongoing - idx - 1>();
+            async_wait_pending_dyn<P>(ongoing - idx - 1);
             __syncwarp();
 
             u16* data = sm + idx * 2048;
@@ -133,7 +130,7 @@ __device__ auto load_rot_8_11(const u16* in, u16* sm, int lane) -> void
                 8
             >(data, lane);
         }
-    });
+    }
 }
 
 /////////////////////////////////////////////////
@@ -197,7 +194,6 @@ struct RowHandler<dtype, N> {
 
         __syncwarp();
 
-#pragma unroll
         for (int i = 0; i < 16; i++) {
             u16* base = sm + 16 * i;
 

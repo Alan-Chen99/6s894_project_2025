@@ -18,9 +18,9 @@ setup(
             name="csrc",
             sources=[
                 "hadamard_transform.cpp",
-                # "hadamard_transform_cuda.cu",
                 "main.cu",
                 "test_frag.cu",
+                "hada_handler.cu",
                 # "tmp.cu",
                 "test_bit.cu",
             ],
@@ -41,7 +41,7 @@ setup(
                     # get ptx files in ./build
                     "--keep",
                     #
-                    # "-fsyntax-only",
+                    "--ptxas-options=-v",
                 ]
                 + versions,
             },

@@ -131,8 +131,8 @@ test_sizes_m = [1 << x for x in range(8, 16)]
 # test_sizes_m = [1 << 15]
 
 # test_elem_counts = [1 << i for i in range(9, 26, 1)]  # 32MB # 64MB # 2**28 = 256M
-test_elem_counts = [1 << 25, 1 << 28]
-# test_elem_counts = [1 << 30]
+# test_elem_counts = [1 << 25, 1 << 28]
+test_elem_counts = [1 << 30]
 
 
 @dataclass
