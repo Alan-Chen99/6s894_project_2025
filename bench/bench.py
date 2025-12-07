@@ -18,7 +18,7 @@ import torch
 # from rich import print
 
 import csrc
-import fast_hadamard_transform_cuda
+# import fast_hadamard_transform_cuda
 import hada_core
 
 
@@ -58,12 +58,12 @@ def hadamard_ref(t: torch.Tensor) -> None:
     t.copy_(ans)
 
 
-class FastHada(BenchmarkTarget):
-    def call(self, t: torch.Tensor) -> None:
-        t.copy_(fast_hadamard_transform_cuda.fast_hadamard_transform(t, get_scale(t.shape[-1])))
+# class FastHada(BenchmarkTarget):
+#     def call(self, t: torch.Tensor) -> None:
+#         t.copy_(fast_hadamard_transform_cuda.fast_hadamard_transform(t, get_scale(t.shape[-1])))
 
-    def call_ref(self, t: torch.Tensor) -> None:
-        hadamard_ref(t)
+#     def call_ref(self, t: torch.Tensor) -> None:
+#         hadamard_ref(t)
 
 
 class HadaCore(BenchmarkTarget):
