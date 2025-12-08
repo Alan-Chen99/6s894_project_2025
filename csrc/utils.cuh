@@ -91,6 +91,7 @@ __host__ __device__ constexpr void static_switch_impl(
 template <int N, typename F>
 __host__ __device__ constexpr void static_switch(int n, F&& f)
 {
+    assert_(0 <= n && n < N);
     static_switch_impl(std::make_index_sequence<N>{}, n, std::forward<F>(f));
 }
 
@@ -109,7 +110,6 @@ template <int N> __device__ __forceinline__ void async_wait_pending()
 // n is [0, MAX]
 template <int MAX> __device__ __forceinline__ void async_wait_pending_dyn(int n)
 {
-    assert_(0 <= n && n <= MAX);
     static_switch<MAX + 1>(n, [&]<int I>() -> void { async_wait_pending<I>(); });
 }
 

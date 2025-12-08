@@ -118,13 +118,23 @@ template <int limit = 1> struct SmBankCount {
 struct Coalesced {
     static constexpr auto check(array<int, 32> word_offsets, int pack) -> bool
     {
-        for (int i = 0; i < 32; i++) {
-            if (word_offsets[i] != i) {
+        int group_size = 32 / pack;
+
+        for (int g = 0; g < pack; g++) {
+            int base = group_size * g;
+
+            if (word_offsets[base] % 32 != 0) {
                 return false;
+            }
+
+            for (int i = 0; i < group_size; i++) {
+                if (word_offsets[base + i] != word_offsets[base] + pack * i) {
+                    return false;
+                }
             }
         }
         return true;
-    };
+    }
 };
 
 struct MemCheckNone {

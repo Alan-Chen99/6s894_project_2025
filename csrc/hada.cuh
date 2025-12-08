@@ -62,21 +62,25 @@ __forceinline__ constexpr auto create_hada_A(int lane)
         // coord[0..N-1] = k bits, coord[N..2N-1] = m bits
         // Id axes: Kronecker delta (k_i == m_i), otherwise 0
         // Rot axes: contribute (-1)^{k_i & m_i} to the sign
+
         int parity = 0;
+        int active = 1;
+
+#pragma unroll
         for (int i = 0; i < N; ++i) {
             bool ki = coord[i];
             bool mi = coord[i + N];
             if (spec[i] == AxSpec::Id) {
-                if (ki != mi) {
-                    return static_cast<u16>(0);
-                }
+                // Identity axis: must match (ki == mi) to be non-zero
+                active &= (ki == mi);
             } else { // AxSpec::Rot
-                if (ki && mi) {
-                    parity ^= 1;
-                }
+                // Rotation axis: flip sign if both bits are set
+                parity ^= (ki & mi);
             }
         }
-        return (parity == 0) ? s_pos : s_neg;
+
+        // Select s_neg if parity is 1, s_pos if 0. Mask with active check.
+        return active ? (parity ? s_neg : s_pos) : static_cast<u16>(0);
     });
 }
 
@@ -165,6 +169,12 @@ constexpr auto hada_rot_8_axis(array<AxSpec, N> spec, Perm<N> P) -> array<AxSpec
 }
 
 // rotate first 8 axis: P[0], P[1], ...
+//
+// Note: One might hope to do this and a transpose at the same time.
+// there is only one way to apply 2 tensor core calls,
+// so the only possibility is fusing with matmul, which gives you a:
+// free pemutation on {0, 1, 5, 6} and another free one on {2, 3, 4, 7}
+// this is not implemented currently
 template <
     float extra_scale = 1.0f,
     DType dtype,
