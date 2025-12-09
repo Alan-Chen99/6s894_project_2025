@@ -150,9 +150,10 @@ class TestConfig:
 
     test_sizes: list[int] = field(default_factory=lambda: list(test_sizes_m))
     elem_counts: list[int] = field(default_factory=lambda: list(test_elem_counts))
-    # dtypes: tuple[torch.dtype, ...] = (torch.float16, torch.bfloat16)
-    # only one for faster build
-    dtypes: tuple[torch.dtype, ...] = (torch.float16,)
+
+    dtypes: tuple[torch.dtype, ...] = (torch.float16, torch.bfloat16)
+    # dtypes: tuple[torch.dtype, ...] = (torch.float16,)
+    # dtypes: tuple[torch.dtype, ...] = (torch.bfloat16,)
 
 
 def _run_checks(

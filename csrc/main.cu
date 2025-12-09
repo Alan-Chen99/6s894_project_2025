@@ -10,7 +10,7 @@
 
 // had dimension is 2**N
 template <DType dtype, int N>
-__global__ __launch_bounds__(32) auto hadamard_transform_ker(const u16* a, u16* out)
+__global__ __launch_bounds__(32, 4) auto hadamard_transform_ker(const u16* a, u16* out)
     -> void
 {
     int lane = threadIdx.x;
@@ -130,10 +130,10 @@ template auto run_fht<DType::Half>(
     cudaStream_t stream
 ) -> void;
 
-// template auto run_fht<torch::ScalarType::BFloat16>(
-//     void* a_mat_ptr,
-//     void* out_ptr,
-//     uint32_t numel,
-//     uint32_t had_size,
-//     cudaStream_t stream
-// ) -> void;
+template auto run_fht<DType::BFloat16>(
+    void* a_mat_ptr,
+    void* out_ptr,
+    uint32_t numel,
+    uint32_t had_size,
+    cudaStream_t stream
+) -> void;

@@ -5,10 +5,10 @@ from torch.utils.cpp_extension import CUDAExtension
 versions = [
     "-gencode",
     "arch=compute_80,code=sm_80",
-    # "-gencode",
-    # "arch=compute_89,code=sm_89",
-    # "-gencode",
-    # "arch=compute_90,code=sm_90",
+    "-gencode",
+    "arch=compute_89,code=sm_89",
+    "-gencode",
+    "arch=compute_90,code=sm_90",
 ]  # TODO: assumes installed CUDA toolkit supports sm_80 to sm_90
 
 setup(

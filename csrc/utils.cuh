@@ -137,9 +137,11 @@ template <DType dtype> struct CudaType;
 
 template <> struct CudaType<DType::Half> {
     using Type = __nv_half;
+    using Type2 = __nv_half2;
 };
 template <> struct CudaType<DType::BFloat16> {
     using Type = __nv_bfloat16;
+    using Type2 = __nv_bfloat162;
 };
 
 // ------------------- Small helpers (packing and bits) -----------------------
@@ -151,50 +153,25 @@ __device__ __forceinline__ u32 pack_b16x2(u16 lo, u16 hi)
 __device__ __forceinline__ u16 lo16(u32 x) { return static_cast<u16>(x & 0xFFFFu); }
 __device__ __forceinline__ u16 hi16(u32 x) { return static_cast<u16>(x >> 16); }
 
-template <DType dtype> __device__ __forceinline__ u16 add16(u16 x, u16 y)
-{
-    using T = CudaType<dtype>::Type;
-    T x_ = std::bit_cast<T>(x);
-    T y_ = std::bit_cast<T>(y);
-    T ans = __hadd(x_, y_);
-    return std::bit_cast<u16>(ans);
-}
-
-template <DType dtype> __device__ __forceinline__ u16 sub16(u16 x, u16 y)
-{
-    using T = CudaType<dtype>::Type;
-    T x_ = std::bit_cast<T>(x);
-    T y_ = std::bit_cast<T>(y);
-    T ans = __hsub(x_, y_);
-    return std::bit_cast<u16>(ans);
-}
-
 // Pairwise add of two packed scalars (lo, hi) in one 32-bit register.
 // Returns elementwise sum in packed form.
-// For fp16: add.f16x2
-// For bf16: add.rn.bf16x2 (requires sm_80+)
-template <DType dtype> __device__ __forceinline__ u32 add16x2(u32 a, u32 b)
+template <DType dtype> __device__ __forceinline__ u32 add16x2(u32 x, u32 y)
 {
-    u32 r;
-    if constexpr (dtype == DType::Half) {
-        asm volatile("add.f16x2 %0, %1, %2;\n" : "=r"(r) : "r"(a), "r"(b));
-    } else {
-        // bfloat16
-        asm volatile("add.rn.bf16x2 %0, %1, %2;\n" : "=r"(r) : "r"(a), "r"(b));
-    }
-    return r;
+    using T = CudaType<dtype>::Type2;
+    T x_ = reinterpret_cast<T&>(x);
+    T y_ = reinterpret_cast<T&>(y);
+    T ans = __hadd2(x_, y_);
+    return reinterpret_cast<u32&>(ans);
 }
 
 // Packed subtract: (lo,hi) = (a.lo - b.lo, a.hi - b.hi)
-template <DType dtype> __device__ __forceinline__ u32 sub16x2(u32 a, u32 b)
+template <DType dtype> __device__ __forceinline__ u32 sub16x2(u32 x, u32 y)
 {
-    u32 r;
-    if constexpr (dtype == DType::Half) {
-        asm volatile("sub.f16x2 %0, %1, %2;\n" : "=r"(r) : "r"(a), "r"(b));
-    } else {
-        asm volatile("sub.rn.bf16x2 %0, %1, %2;\n" : "=r"(r) : "r"(a), "r"(b));
-    }
-    return r;
+    using T = CudaType<dtype>::Type2;
+    T x_ = reinterpret_cast<T&>(x);
+    T y_ = reinterpret_cast<T&>(y);
+    T ans = __hsub2(x_, y_);
+    return reinterpret_cast<u32&>(ans);
 }
 
 ////////////////////////////////////////////////////////////

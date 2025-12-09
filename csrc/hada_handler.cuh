@@ -130,9 +130,6 @@ struct RowHandler<dtype, N> {
 
         /////
 
-        // 3, 4, 5, 6, 7, 0, 8, 1, 2
-        // 3, 4, 5, 6, 7, 0, 8, 9, 1, 2
-
         constexpr Perm<N1> perm1 = []() consteval -> Perm<N1> {
             array<int, N1> ans = {3, 4, 5, 6, 7, /**/ 0};
             for (int i = 8; i < N1; i++) {
@@ -142,6 +139,9 @@ struct RowHandler<dtype, N> {
             ans[N1 - 1] = 2;
             return {ans};
         }();
+
+        // 3, 4, 5, 6, 7, 0, 8, 9, 10, 1, 2
+        // Dummy2<perm1>::x x;
 
         constexpr Perm<N2> perm2 = []() consteval -> Perm<N2> {
             array<int, N2> ans = {3, 4, 5, 6, 7, /**/ 0};
@@ -153,7 +153,8 @@ struct RowHandler<dtype, N> {
             return {ans};
         }();
 
-        // Dummy2<perm1>::x x;
+        // 3, 4, 5, 6, 7, 0, 8, 9, 1, 2
+        // Dummy2<perm2>::x x;
 
         /////
 
@@ -181,6 +182,7 @@ struct RowHandler<dtype, N> {
             return ans;
         }();
 
+        // Dummy2<spec1>::x x;
         //////
 
         load_rot_n<dtype, N1, spec1, perm1, 1 << (N - N1), 7>(in, sm, lane);
