@@ -10,7 +10,7 @@
  * - Fused: Combined kernel with warp-level reductions
  * - Fused Vectorized: Optimized with float4 vectorized loads
 
- nvcc -o benchmark ./fused_ht/fwht_gemm_fusion.cu -lcublas -O3
+ nvcc -o benchmark ./fused_ht/fwht_gemv_fusion.cu -lcublas -O3
  */
 
 #include <cuda_runtime.h>
