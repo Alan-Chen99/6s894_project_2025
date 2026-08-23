@@ -1,0 +1,173 @@
+{
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "capability": [
+    9,
+    0
+  ],
+  "pytorch": "2.9.1+cu128",
+  "pytorch_cuda": "12.8",
+  "triton": "3.5.1",
+  "flaggems_commit": "30bfcc0735b8ebd48bd7339ef752ec64df69663f",
+  "rows": [
+    {
+      "dtype": "float16",
+      "size": 256,
+      "batch": 4194304,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4282798767089844,
+      "flaggems_ms": 1.457147216796875,
+      "speedup_vs_flaggems": 1.0202112629034628
+    },
+    {
+      "dtype": "float16",
+      "size": 512,
+      "batch": 2097152,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4156858825683594,
+      "flaggems_ms": 1.4064891052246093,
+      "speedup_vs_flaggems": 0.9935036596345335
+    },
+    {
+      "dtype": "float16",
+      "size": 1024,
+      "batch": 1048576,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4178851318359376,
+      "flaggems_ms": 1.4090403747558593,
+      "speedup_vs_flaggems": 0.9937620073153418
+    },
+    {
+      "dtype": "float16",
+      "size": 2048,
+      "batch": 524288,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.422421417236328,
+      "flaggems_ms": 1.5909353637695312,
+      "speedup_vs_flaggems": 1.1184697758984918
+    },
+    {
+      "dtype": "float16",
+      "size": 4096,
+      "batch": 262144,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4263389587402344,
+      "flaggems_ms": 1.6409295654296876,
+      "speedup_vs_flaggems": 1.1504485349534188
+    },
+    {
+      "dtype": "float16",
+      "size": 8192,
+      "batch": 131072,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4263215637207032,
+      "flaggems_ms": 1.789591064453125,
+      "speedup_vs_flaggems": 1.2546897627943006
+    },
+    {
+      "dtype": "float16",
+      "size": 16384,
+      "batch": 65536,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4384651184082031,
+      "flaggems_ms": 2.188754425048828,
+      "speedup_vs_flaggems": 1.5215901984963602
+    },
+    {
+      "dtype": "float16",
+      "size": 32768,
+      "batch": 32768,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4263285827636718,
+      "flaggems_ms": 3.1801498413085936,
+      "speedup_vs_flaggems": 2.22960535162711
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 256,
+      "batch": 4194304,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4286410522460937,
+      "flaggems_ms": 1.4565298461914062,
+      "speedup_vs_flaggems": 1.0195212043651316
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 512,
+      "batch": 2097152,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4157440185546875,
+      "flaggems_ms": 1.4065277099609375,
+      "speedup_vs_flaggems": 0.9934901306500601
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 1024,
+      "batch": 1048576,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4175856018066406,
+      "flaggems_ms": 1.4094386291503906,
+      "speedup_vs_flaggems": 0.9942529236711581
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 2048,
+      "batch": 524288,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4201837158203126,
+      "flaggems_ms": 1.5707945251464843,
+      "speedup_vs_flaggems": 1.1060502297332548
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 4096,
+      "batch": 262144,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4281967163085938,
+      "flaggems_ms": 1.6266593933105469,
+      "speedup_vs_flaggems": 1.1389603229973193
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 8192,
+      "batch": 131072,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4323820495605468,
+      "flaggems_ms": 1.7819900512695312,
+      "speedup_vs_flaggems": 1.2440745482786828
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 16384,
+      "batch": 65536,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4329507446289063,
+      "flaggems_ms": 2.1924508666992186,
+      "speedup_vs_flaggems": 1.5300252816903357
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 32768,
+      "batch": 32768,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4271182250976562,
+      "flaggems_ms": 3.2074432373046875,
+      "speedup_vs_flaggems": 2.247496514933236
+    }
+  ]
+}

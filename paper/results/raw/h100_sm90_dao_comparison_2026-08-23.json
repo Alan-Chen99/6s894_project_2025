@@ -1,0 +1,172 @@
+{
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "capability": [
+    9,
+    0
+  ],
+  "pytorch": "2.9.1+cu128",
+  "pytorch_cuda": "12.8",
+  "dao_commit": "e7706faf8d1c3b9f241e36860640ad1dac644ede",
+  "rows": [
+    {
+      "dtype": "float16",
+      "size": 256,
+      "batch": 4194304,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4283319091796876,
+      "dao_ms": 2.5238301086425783,
+      "speedup_vs_dao": 1.7669773337851507
+    },
+    {
+      "dtype": "float16",
+      "size": 512,
+      "batch": 2097152,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.415634307861328,
+      "dao_ms": 1.4067874145507813,
+      "speedup_vs_dao": 0.9937505800322739
+    },
+    {
+      "dtype": "float16",
+      "size": 1024,
+      "batch": 1048576,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4178549194335937,
+      "dao_ms": 1.9474635314941406,
+      "speedup_vs_dao": 1.3735280703276156
+    },
+    {
+      "dtype": "float16",
+      "size": 2048,
+      "batch": 524288,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4223471069335938,
+      "dao_ms": 1.8130514526367187,
+      "speedup_vs_dao": 1.2746898726749167
+    },
+    {
+      "dtype": "float16",
+      "size": 4096,
+      "batch": 262144,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.426363525390625,
+      "dao_ms": 1.8241038513183594,
+      "speedup_vs_dao": 1.2788491985721584
+    },
+    {
+      "dtype": "float16",
+      "size": 8192,
+      "batch": 131072,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.426376495361328,
+      "dao_ms": 1.8315206909179687,
+      "speedup_vs_dao": 1.2840373469937263
+    },
+    {
+      "dtype": "float16",
+      "size": 16384,
+      "batch": 65536,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4384014892578125,
+      "dao_ms": 1.9105134582519532,
+      "speedup_vs_dao": 1.3282198833357308
+    },
+    {
+      "dtype": "float16",
+      "size": 32768,
+      "batch": 32768,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.426318359375,
+      "dao_ms": 3.359039001464844,
+      "speedup_vs_dao": 2.355041551128
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 256,
+      "batch": 4194304,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4286492919921876,
+      "dao_ms": 2.525284729003906,
+      "speedup_vs_dao": 1.7676029681731824
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 512,
+      "batch": 2097152,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4156752014160157,
+      "dao_ms": 1.4066888427734374,
+      "speedup_vs_dao": 0.9936522454913459
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 1024,
+      "batch": 1048576,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4176045227050782,
+      "dao_ms": 1.9529345703125,
+      "speedup_vs_dao": 1.377630036468777
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 2048,
+      "batch": 524288,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4202752685546876,
+      "dao_ms": 1.801595458984375,
+      "speedup_vs_dao": 1.2684832995914446
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 4096,
+      "batch": 262144,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4282473754882812,
+      "dao_ms": 1.794552764892578,
+      "speedup_vs_dao": 1.2564719499512935
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 8192,
+      "batch": 131072,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4323727416992187,
+      "dao_ms": 1.8209988403320312,
+      "speedup_vs_dao": 1.271316318245338
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 16384,
+      "batch": 65536,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.432952880859375,
+      "dao_ms": 1.9994136047363282,
+      "speedup_vs_dao": 1.3953100841230968
+    },
+    {
+      "dtype": "bfloat16",
+      "size": 32768,
+      "batch": 32768,
+      "total_elements": 1073741824,
+      "iterations": 400,
+      "ours_ms": 1.4271548461914063,
+      "dao_ms": 3.068828125,
+      "speedup_vs_dao": 2.1503119533172343
+    }
+  ]
+}

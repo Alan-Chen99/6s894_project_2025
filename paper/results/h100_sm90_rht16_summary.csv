@@ -1,0 +1,5 @@
+pipeline,input_dtype,rows,elements,latency_ms,speedup_vs_separate,reconstruction_mse,reconstruction_max_error
+rht16,float16,4194304,67108864,0.161480,0.977540,,
+rht16,bfloat16,4194304,67108864,0.161464,0.977851,,
+rht16_fp8,float16,4194304,67108864,0.262292,6.014956,0.000497906,0.143596
+rht16_fp8,bfloat16,4194304,67108864,0.264054,5.984283,0.000504853,0.126081

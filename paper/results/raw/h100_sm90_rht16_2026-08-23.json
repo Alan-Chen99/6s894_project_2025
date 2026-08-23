@@ -1,0 +1,31 @@
+{
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "capability": [
+    9,
+    0
+  ],
+  "pytorch": "2.9.1+cu128",
+  "pytorch_cuda": "12.8",
+  "triton": "3.5.1",
+  "operation": "x @ (S @ H16 / 4), fixed sign mask 0xA3F5",
+  "rows": [
+    {
+      "dtype": "float16",
+      "rows": 4194304,
+      "elements": 67108864,
+      "correctness_max_error": 0.0,
+      "triton_rht16_ms": 0.16147968292236328,
+      "torch_matmul_ms": 0.15785280227661133,
+      "speedup_vs_torch_matmul": 0.9775397091441176
+    },
+    {
+      "dtype": "bfloat16",
+      "rows": 4194304,
+      "elements": 67108864,
+      "correctness_max_error": 0.0,
+      "triton_rht16_ms": 0.16146392822265626,
+      "torch_matmul_ms": 0.15788767814636231,
+      "speedup_vs_torch_matmul": 0.9778510896169803
+    }
+  ]
+}

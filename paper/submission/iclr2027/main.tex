@@ -1,0 +1,221 @@
+\documentclass{article}
+\usepackage{iclr2027_conference,times}
+\input{math_commands.tex}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{url}
+
+\title{Tensor-Core Fast Walsh--Hadamard Transforms\\at the Memory Roofline}
+
+% Keep authors anonymous for submission. Do not enable \iclrfinalcopy.
+\author{Anonymous authors}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The Fast Walsh--Hadamard Transform (FWHT) is increasingly used to suppress
+outliers before low-precision quantization, but conventional GPU kernels pay
+substantial instruction and data-movement overhead. We present a tensor-core
+FWHT whose register layout and transform ordering reduce dynamic instructions
+while preserving coalesced movement through the memory hierarchy. On an
+NVIDIA H100, the implementation sustains approximately 3.0~TB/s effective
+bandwidth, operates within 1.7\% of an empirical read--modify--write roofline,
+and is up to 1.59$\times$, 2.36$\times$, 2.25$\times$, and 1.36$\times$ faster
+than HadaCore, Tri Dao's CUDA implementation, FlagGems Triton, and a patched
+Triton tensor-core baseline, respectively. Nsight Compute shows
+2.02--3.60$\times$ fewer dynamically executed warp instructions than HadaCore
+across representative transform sizes. We additionally develop a path for
+fusing randomized sign rotations with the transform and quantization stages
+used by low-precision training; a preliminary fused H100 RHT--FP8 pipeline is
+approximately 6$\times$ faster than eager separate operations. End-to-end and
+native NVFP4 results remain pending.
+\end{abstract}
+
+\section{Introduction}
+Hadamard rotations are a simple and effective way to redistribute outliers
+before aggressive quantization. This makes their systems cost important:
+an otherwise inexpensive rotation may require extra reads and writes around a
+much faster FP8 or FP4 matrix multiplication. We ask whether tensor cores can
+execute a standalone FWHT at the memory roofline and whether the same layout
+can be integrated into a randomized Hadamard transform (RHT) pipeline.
+
+Our current contributions are:
+\begin{itemize}
+  \item A tensor-core FWHT supporting normalized FP16 and BF16 transforms of
+        size 256 through 32768.
+  \item A matched H100 evaluation against four open-source CUDA and Triton
+        implementations, including correctness and empirical roofline checks.
+  \item Dynamic profiling evidence that the transform ordering executes
+        2.02--3.60$\times$ fewer warp instructions than HadaCore.
+  \item A tiled H16 RHT prototype and fused H100 RHT--FP8 pipeline motivated by
+        the randomized rotations used for NVFP4 weight-gradient operands.
+\end{itemize}
+
+\section{Background and motivation}
+For a power-of-two dimension $d$, the normalized Hadamard matrix satisfies
+$H_d H_d^\top / d = I$. A randomized Hadamard transform introduces a fixed
+Rademacher diagonal matrix $S_d$,
+\begin{equation}
+  R_d = \frac{1}{\sqrt d} S_d H_d,
+\end{equation}
+which smooths tensor outliers while preserving inner products. Low-precision
+training systems can apply compatible rotations to both GEMM operands so that
+the rotations cancel in exact arithmetic. NVIDIA's NVFP4 recipe applies a
+tiled $d=16$ RHT to BF16 weight-gradient inputs before quantization
+\citep{nvidia_nvfp4}.
+
+Hopper supports native tensor-wide FP8, whereas native MXFP8 and NVFP4 require
+Blackwell-class hardware. We therefore use Hopper to evaluate the FWHT,
+profiling, fused RHT mechanics, and an FP8 quantization pipeline; native NVFP4
+end-to-end measurements are reserved for Blackwell.
+
+\section{Tensor-core FWHT}
+\label{sec:method}
+The implementation decomposes the transform into tensor-core-compatible
+subtransforms and selects a register permutation that makes the intermediate
+layout useful to the next stage. Small transforms remain entirely in
+registers. Larger transforms use shared memory between two phases and overlap
+global-to-shared movement with computation. Normalization is folded into the
+constant Hadamard operands.
+
+The central systems hypothesis is that layout selection removes explicit
+permutation, address-generation, and data-movement instructions. Section
+\ref{sec:profile} tests this hypothesis with dynamic hardware counters.
+
+\section{Evaluation}
+\label{sec:evaluation}
+\paragraph{Setup.}
+We evaluate an NVIDIA H100 80GB HBM3 GPU with PyTorch 2.9.1+cu128 and CUDA
+12.9.1 for extension compilation. Each saturated-throughput point processes
+$2^{30}$ FP16 or BF16 elements for 400 timed in-place transforms. All baselines
+use the same normalization, shape, stream semantics, and preallocated tensors.
+Compilation and JIT time are excluded.
+
+\begin{table}[t]
+\caption{Speedup of our kernel over matched baselines on H100. Values below
+1 indicate a baseline win.}
+\label{tab:baselines}
+\centering
+\small
+\begin{tabular}{llrrrr}
+\toprule
+Type & Size & HadaCore & Tri Dao & FlagGems & Arthur Triton \\
+\midrule
+FP16 & 256   & 0.99 & 1.77 & 1.02 & 1.81 \\
+FP16 & 4096  & 0.99 & 1.28 & 1.15 & 1.11 \\
+FP16 & 16384 & 1.10 & 1.33 & 1.52 & 0.98 \\
+FP16 & 32768 & 1.53 & 2.36 & 2.23 & 1.28 \\
+BF16 & 256   & 0.99 & 1.77 & 1.02 & 1.80 \\
+BF16 & 4096  & 1.01 & 1.26 & 1.14 & 1.16 \\
+BF16 & 16384 & 1.15 & 1.40 & 1.53 & 0.99 \\
+BF16 & 32768 & 1.59 & 2.15 & 2.25 & 1.36 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Our kernel sustains 2.99--3.03~TB/s effective bandwidth and remains within
+0--1.7\% of an empirical elementwise read--modify--write roofline across the
+tested domain. It is not uniformly faster: several small and middle-size
+points are ties or small losses. The advantage is largest at size 32768, where
+instruction and intermediate-layout costs dominate the baselines.
+
+\subsection{Instruction-level explanation}
+\label{sec:profile}
+We profile one NVTX-marked launch after warmup with Nsight Compute 2025.2.1.
+Table~\ref{tab:profile} reports dynamic warp instructions rather than static
+SASS line counts.
+
+\begin{table}[t]
+\caption{Matched H100 profile against HadaCore. Instruction reduction and
+kernel speedup are HadaCore divided by ours.}
+\label{tab:profile}
+\centering
+\small
+\begin{tabular}{llrr}
+\toprule
+Type & Size & Fewer instructions & Kernel speedup \\
+\midrule
+FP16 & 256   & 2.92$\times$ & 1.01$\times$ \\
+FP16 & 4096  & 2.25$\times$ & 1.04$\times$ \\
+FP16 & 32768 & 3.47$\times$ & 1.69$\times$ \\
+BF16 & 256   & 2.79$\times$ & 1.01$\times$ \\
+BF16 & 4096  & 2.02$\times$ & 1.08$\times$ \\
+BF16 & 32768 & 3.60$\times$ & 1.81$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At size 256 the instruction reduction does not improve latency because memory
+traffic and launch overhead dominate. At size 32768, FP16 tensor-pipe activity
+increases from 9.61\% to 16.54\%, while the profiled kernel becomes
+1.69$\times$ faster. BF16 shows the same trend.
+
+\section{Randomized Hadamard and low-precision integration}
+\label{sec:rht}
+Our target pipeline is
+\begin{equation}
+\text{BF16 input}\rightarrow\text{random sign}\rightarrow
+\text{Hadamard}\rightarrow\operatorname{amax}\rightarrow
+\text{scale}\rightarrow\text{low-precision output}.
+\end{equation}
+The random sign operation is an exact sign-bit change for BF16/FP16 and can be
+folded into loading rather than materialized as a separate tensor. The
+normalization is already folded into the transform. The remaining opportunity
+is to combine output storage with amax/scaling and quantization, eliminating
+full-tensor intermediate memory passes.
+
+Our preliminary H100 prototype processes 67.1M elements. Plain H16 RHT is
+within 2.3\% of a dense H16 matmul reference and matches it exactly at the
+output dtype. Fusing RHT, per-16 amax/scaling, and E4M3 output reduces latency
+from 1.578 to 0.262~ms for FP16 input and from 1.580 to 0.264~ms for BF16 input,
+a 6.01$\times$/5.98$\times$ speedup over an eager separate-operation pipeline.
+This is a fusion ablation rather than a Transformer Engine comparison, and
+E4M3 on H100 is not native NVFP4.
+
+Separately, we benchmark Transformer Engine 2.18 linear layers with a matched
+PyTorch 2.8.0+cu129 stack on the same H100. For a
+$4096\times8192\times8192$ GEMM, delayed-scaling FP8 is 1.32$\times$ faster
+than BF16 in forward and 1.66$\times$ faster for the
+combined forward, Dgrad, and Wgrad measurement. For Llama-style
+$4096\rightarrow11008$ and $11008\rightarrow4096$ projections, the combined
+speedups are 1.47$\times$ and 1.41$\times$. FP8 block scaling reaches
+1.17$\times$/1.34$\times$ for forward/combined measurement at the square
+8192 shape and 1.26$\times$ combined for both Llama projections. Conversely,
+all FP8 recipes trail BF16 for the smaller $4096^3$ forward GEMM, showing that
+quantization overhead creates a workload-size crossover. These are preliminary
+linear-layer microbenchmarks rather than end-to-end results. Model-derived
+distributions, direct RHT integration, and native NVFP4 Blackwell experiments
+remain pending.
+
+\section{Limitations}
+The current timing results are single-process measurements and require
+independent repetitions, randomized method order, confidence intervals, and
+clock/power metadata. The H100 cannot provide native MXFP8 or NVFP4 throughput.
+The patched Arthur baseline must be identified as a local BF16 compatibility
+patch rather than unmodified upstream. End-to-end training quality and
+time-to-accuracy remain to be established.
+
+\section{Conclusion}
+Tensor cores can implement a normalized FWHT at the H100 memory roofline while
+substantially reducing dynamic instructions. The next question is whether this
+efficiency survives integration into the randomized rotation and quantization
+pipeline that motivates the transform in low-precision training.
+
+\bibliography{references}
+\bibliographystyle{iclr2027_conference}
+
+\section*{Reproducibility statement}
+The supplementary artifact will include pinned baseline revisions, build
+commands, correctness tests, raw JSON timing data, derived CSV tables, Nsight
+Compute reports, and scripts that reproduce every table. Hardware and software
+provenance are recorded alongside each result. The anonymous artifact will
+exclude identifying paths and scheduler metadata.
+
+\section*{Ethics statement}
+This work studies GPU kernel efficiency and low-precision training. We do not
+identify direct human-subject, privacy, or safety risks beyond the general
+energy and hardware-resource impacts of large-scale machine-learning research.
+
+\end{document}

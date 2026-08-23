@@ -1,0 +1,813 @@
+{
+  "device": "NVIDIA H100 80GB HBM3",
+  "cases": [
+    "AddOne1",
+    "AddOne2",
+    "HadaCore",
+    "Ours",
+    "AddOne3"
+  ],
+  "pytorch": "2.9.1+cu128",
+  "results": [
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 256,
+      "n": 4194304,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.414608154296875,
+      "total_ms": 565.84326171875
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 256,
+      "n": 4194304,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146449279785156,
+      "total_ms": 565.8579711914062
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 256,
+      "n": 4194304,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4146485900878907,
+      "total_ms": 565.8594360351562
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 256,
+      "n": 4194304,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146794128417968,
+      "total_ms": 565.8717651367188
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 256,
+      "n": 4194304,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4145903015136718,
+      "total_ms": 565.8361206054688
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 256,
+      "n": 4194304,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.414593963623047,
+      "total_ms": 565.8375854492188
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 256,
+      "n": 4194304,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4278851318359376,
+      "total_ms": 571.154052734375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 256,
+      "n": 4194304,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4281597900390626,
+      "total_ms": 571.263916015625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 256,
+      "n": 4194304,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4146481323242188,
+      "total_ms": 565.8592529296875
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 256,
+      "n": 4194304,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.414671630859375,
+      "total_ms": 565.86865234375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 512,
+      "n": 2097152,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4146340942382813,
+      "total_ms": 565.8536376953125
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 512,
+      "n": 2097152,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4145820617675782,
+      "total_ms": 565.8328247070312
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 512,
+      "n": 2097152,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4146125793457032,
+      "total_ms": 565.8450317382812
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 512,
+      "n": 2097152,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146047973632812,
+      "total_ms": 565.8419189453125
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 512,
+      "n": 2097152,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4156138610839843,
+      "total_ms": 566.2455444335938
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 512,
+      "n": 2097152,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4129670715332032,
+      "total_ms": 565.1868286132812
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 512,
+      "n": 2097152,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4153106689453125,
+      "total_ms": 566.124267578125
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 512,
+      "n": 2097152,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4155682373046874,
+      "total_ms": 566.227294921875
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 512,
+      "n": 2097152,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.414567108154297,
+      "total_ms": 565.8268432617188
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 512,
+      "n": 2097152,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146688842773438,
+      "total_ms": 565.8675537109375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 1024,
+      "n": 1048576,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4145492553710937,
+      "total_ms": 565.8197021484375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 1024,
+      "n": 1048576,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4147903442382812,
+      "total_ms": 565.9161376953125
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 1024,
+      "n": 1048576,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4145205688476563,
+      "total_ms": 565.8082275390625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 1024,
+      "n": 1048576,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146218872070313,
+      "total_ms": 565.8487548828125
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 1024,
+      "n": 1048576,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4221321105957032,
+      "total_ms": 568.8528442382812
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 1024,
+      "n": 1048576,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.42166748046875,
+      "total_ms": 568.6669921875
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 1024,
+      "n": 1048576,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4176956176757813,
+      "total_ms": 567.0782470703125
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 1024,
+      "n": 1048576,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4175486755371094,
+      "total_ms": 567.0194702148438
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 1024,
+      "n": 1048576,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.414558868408203,
+      "total_ms": 565.8235473632812
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 1024,
+      "n": 1048576,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4147349548339845,
+      "total_ms": 565.8939819335938
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 2048,
+      "n": 524288,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4145382690429686,
+      "total_ms": 565.8153076171875
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 2048,
+      "n": 524288,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146635437011719,
+      "total_ms": 565.8654174804688
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 2048,
+      "n": 524288,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4145265197753907,
+      "total_ms": 565.8106079101562
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 2048,
+      "n": 524288,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146751403808593,
+      "total_ms": 565.8700561523438
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 2048,
+      "n": 524288,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4172575378417969,
+      "total_ms": 566.9030151367188
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 2048,
+      "n": 524288,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4165199279785157,
+      "total_ms": 566.6079711914062
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 2048,
+      "n": 524288,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4220466613769531,
+      "total_ms": 568.8186645507812
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 2048,
+      "n": 524288,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.420052032470703,
+      "total_ms": 568.0208129882812
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 2048,
+      "n": 524288,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.41461181640625,
+      "total_ms": 565.8447265625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 2048,
+      "n": 524288,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.41470947265625,
+      "total_ms": 565.8837890625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 4096,
+      "n": 262144,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.414528350830078,
+      "total_ms": 565.8113403320312
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 4096,
+      "n": 262144,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.414610595703125,
+      "total_ms": 565.84423828125
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 4096,
+      "n": 262144,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4145402526855468,
+      "total_ms": 565.8161010742188
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 4096,
+      "n": 262144,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4147454833984374,
+      "total_ms": 565.898193359375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 4096,
+      "n": 262144,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.409390869140625,
+      "total_ms": 563.75634765625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 4096,
+      "n": 262144,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.44176513671875,
+      "total_ms": 576.7060546875
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 4096,
+      "n": 262144,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4261410522460938,
+      "total_ms": 570.4564208984375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 4096,
+      "n": 262144,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4279779052734376,
+      "total_ms": 571.191162109375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 4096,
+      "n": 262144,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4146197509765626,
+      "total_ms": 565.847900390625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 4096,
+      "n": 262144,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146176147460938,
+      "total_ms": 565.8470458984375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 8192,
+      "n": 131072,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4146133422851563,
+      "total_ms": 565.8453369140625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 8192,
+      "n": 131072,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146514892578126,
+      "total_ms": 565.860595703125
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 8192,
+      "n": 131072,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4146441650390624,
+      "total_ms": 565.857666015625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 8192,
+      "n": 131072,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146548461914064,
+      "total_ms": 565.8619384765625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 8192,
+      "n": 131072,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4960516357421876,
+      "total_ms": 598.420654296875
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 8192,
+      "n": 131072,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.5639027404785155,
+      "total_ms": 625.5610961914062
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 8192,
+      "n": 131072,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4260751342773437,
+      "total_ms": 570.4300537109375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 8192,
+      "n": 131072,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4320413208007812,
+      "total_ms": 572.8165283203125
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 8192,
+      "n": 131072,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4145896911621094,
+      "total_ms": 565.8358764648438
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 8192,
+      "n": 131072,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4147021484375,
+      "total_ms": 565.880859375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 16384,
+      "n": 65536,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4146644592285156,
+      "total_ms": 565.8657836914062
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 16384,
+      "n": 65536,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146524047851563,
+      "total_ms": 565.8609619140625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 16384,
+      "n": 65536,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.414636688232422,
+      "total_ms": 565.8546752929688
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 16384,
+      "n": 65536,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4147227478027344,
+      "total_ms": 565.8890991210938
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 16384,
+      "n": 65536,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.5843589782714844,
+      "total_ms": 633.7435913085938
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 16384,
+      "n": 65536,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.6477442932128907,
+      "total_ms": 659.0977172851562
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 16384,
+      "n": 65536,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4383221435546876,
+      "total_ms": 575.328857421875
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 16384,
+      "n": 65536,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4327407836914063,
+      "total_ms": 573.0963134765625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 16384,
+      "n": 65536,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4145443725585938,
+      "total_ms": 565.8177490234375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 16384,
+      "n": 65536,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146488952636718,
+      "total_ms": 565.8595581054688
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 32768,
+      "n": 32768,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.414639892578125,
+      "total_ms": 565.85595703125
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne1",
+      "m": 32768,
+      "n": 32768,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4146363830566406,
+      "total_ms": 565.8545532226562
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 32768,
+      "n": 32768,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4146328735351563,
+      "total_ms": 565.8531494140625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne2",
+      "m": 32768,
+      "n": 32768,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4147026062011718,
+      "total_ms": 565.8810424804688
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 32768,
+      "n": 32768,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 2.1806520080566405,
+      "total_ms": 872.2608032226562
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "HadaCore",
+      "m": 32768,
+      "n": 32768,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 2.263067321777344,
+      "total_ms": 905.2269287109375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 32768,
+      "n": 32768,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4261856079101562,
+      "total_ms": 570.4742431640625
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "Ours",
+      "m": 32768,
+      "n": 32768,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4271290588378907,
+      "total_ms": 570.8516235351562
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 32768,
+      "n": 32768,
+      "dtype": "float16",
+      "runs": 400,
+      "per_iter_ms": 1.4145452880859375,
+      "total_ms": 565.818115234375
+    },
+    {
+      "device": "NVIDIA H100 80GB HBM3",
+      "case": "AddOne3",
+      "m": 32768,
+      "n": 32768,
+      "dtype": "bfloat16",
+      "runs": 400,
+      "per_iter_ms": 1.4147267150878906,
+      "total_ms": 565.8906860351562
+    }
+  ]
+}

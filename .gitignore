@@ -8,5 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+.venv-cu129
 
 .conda
+
+# Local benchmark checkouts and binary/runtime staging
+paper/baselines/src/
+paper/baselines/te_packages/
+paper/baselines/te_restore/
+paper/baselines/te_runtime/
+paper/submission/iclr2027-style-files.zip
