@@ -84,6 +84,14 @@ both. At the smaller 4096-cubed forward shape, all FP8 recipes trail BF16,
 showing that quantization overhead can dominate. These are preliminary
 single-process microbenchmarks, not an end-to-end model result.
 
+An initial forward pipeline experiment applies the fixed-sign H16 RHT before
+the same TE Linear. Delayed FP8 plus RHT remains 1.19x faster than plain BF16
+Linear for square-8192 and 1.13x faster for the Llama up projection. It is
+approximately tied for Llama down (0.98x) and slower for square-4096. Against
+BF16 plus the same RHT, delayed FP8 is 1.30x, 1.27x, and 1.13x faster for
+square-8192, Llama up, and Llama down. This isolates forward pipeline cost; it
+is not a TE quantized-tensor adapter or a training benchmark.
+
 See `results/h100_sm90_summary.csv` for the derived table and `baselines/` for
 the external-baseline registry.
 

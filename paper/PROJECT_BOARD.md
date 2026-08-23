@@ -20,7 +20,7 @@ over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
 | H100 standalone baselines | Results captured | Repeat randomized-order runs and confidence intervals | H100 |
 | Instruction profiling | Results captured | Add opcode/SASS categorization and independent profile repetition | H100 |
 | Random Hadamard transform | Prototype measured | Replace Triton prototype with/integrate into the CUDA path | H100 |
-| H16 RHT + quantization | Prototype measured | Integrate fused RHT into the measured TE linear path | H100 initially |
+| H16 RHT + quantization | Pipeline cost measured | Implement TE quantized-tensor adapter and training integration | H100 initially |
 | Native FP8 | Linear baseline measured | Test model-derived tensors and quantify RHT impact | H100 |
 | MXFP8 | Hardware blocked | Benchmark block-32 E8M0-scaled path | SM100+ Blackwell |
 | NVFP4 | Hardware blocked | Benchmark H16 RHT + block-16 E4M3 scaling + E2M1 output | SM100+ Blackwell |
@@ -31,7 +31,7 @@ locally compiled PyTorch CUDA binding. It has passed a BF16 `te.Linear` smoke
 test with PyTorch 2.9.1+cu128 on H100 allocation `21044277` (`node2900`). A
 separate `.venv-cu129` with PyTorch 2.8.0+cu129 enables delayed, current, and
 block FP8 scaling. Allocation `21044277` expired before the subsequent RHT-to-
-TE pipeline-cost script could run; that experiment remains pending.
+TE pipeline-cost script could run; it was completed on allocation `21053440`.
 The first timed TE linear comparison is saved under `paper/results/raw/` and
 summarized in `paper/results/h100_sm90_transformer_engine_summary.csv`.
 In a matched PyTorch 2.8.0+cu129 sweep, delayed-scaling FP8 reaches 1.32x fprop
@@ -40,6 +40,15 @@ is slower for the smaller 4096-cubed fprop, demonstrating the quantization-
 overhead crossover. The isolated CUDA 12.9 environment enables FP8 block
 scaling: it reaches 1.17x and 1.34x on those two measurements, but trails
 delayed scaling. The local FP8 fusion ablation remains a separate result.
+
+The first RHT-to-TE forward pipeline measurement applies the fixed-sign H16
+transform to BF16 activations before the same TE Linear. For square-8192,
+delayed FP8 plus RHT is 1.19x faster than plain BF16 Linear and 1.30x faster
+than BF16 plus RHT. For the Llama up projection those values are 1.13x and
+1.27x. The down projection is approximately tied with plain BF16 (0.98x) but
+1.13x faster than BF16 plus RHT. Square-4096 does not amortize the transform.
+This is a forward pipeline-cost experiment, not yet a direct TE quantized-
+tensor integration or an end-to-end training result.
 
 ## Low-precision decision
 

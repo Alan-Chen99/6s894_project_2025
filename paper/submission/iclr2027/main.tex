@@ -189,6 +189,16 @@ linear-layer microbenchmarks rather than end-to-end results. Model-derived
 distributions, direct RHT integration, and native NVFP4 Blackwell experiments
 remain pending.
 
+As a first integration-cost experiment, we apply the fixed-sign H16 transform
+to BF16 activations immediately before the same Transformer Engine Linear. The
+delayed-scaling FP8 pipeline, including RHT, is 1.19$\times$ faster than plain
+BF16 Linear for square-8192 and 1.13$\times$ faster for the Llama up
+projection. It is approximately tied for Llama down (0.98$\times$) and slower
+for square-4096. When both paths include RHT, delayed FP8 is 1.30$\times$,
+1.27$\times$, and 1.13$\times$ faster for square-8192, Llama up, and Llama
+down. This measures forward pipeline cost; direct integration with Transformer
+Engine quantized tensors and training backward passes remains future work.
+
 \section{Limitations}
 The current timing results are single-process measurements and require
 independent repetitions, randomized method order, confidence intervals, and
