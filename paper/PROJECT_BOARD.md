@@ -28,8 +28,10 @@ over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
 
 Transformer Engine 2.18.0 is staged under `paper/baselines/te_runtime/` with a
 locally compiled PyTorch CUDA binding. It has passed a BF16 `te.Linear` smoke
-test with PyTorch 2.9.1+cu128 on the active H100 allocation (`21044277`,
-`node2900`). Delayed, current, and block FP8 scaling recipes import correctly.
+test with PyTorch 2.9.1+cu128 on H100 allocation `21044277` (`node2900`). A
+separate `.venv-cu129` with PyTorch 2.8.0+cu129 enables delayed, current, and
+block FP8 scaling. Allocation `21044277` expired before the subsequent RHT-to-
+TE pipeline-cost script could run; that experiment remains pending.
 The first timed TE linear comparison is saved under `paper/results/raw/` and
 summarized in `paper/results/h100_sm90_transformer_engine_summary.csv`.
 In a matched PyTorch 2.8.0+cu129 sweep, delayed-scaling FP8 reaches 1.32x fprop
