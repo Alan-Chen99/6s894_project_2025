@@ -89,7 +89,9 @@ def rht16_te_block_buffers(
     padded_rows = triton.cdiv(rows, 4) * 4
     q = torch.empty_like(x, dtype=torch.float8_e4m3fn)
     scale_inv = torch.empty((width // 128, padded_rows), device=x.device, dtype=torch.float32)
-    block_m = 16
+    # A 64-row tile gives substantially better SM90 occupancy than 16 rows for
+    # this eight-dot writer while keeping register pressure below the cliff.
+    block_m = 64
     _rht16_te_block_kernel[(triton.cdiv(rows, block_m), width // 128)](
         x,
         q,
@@ -161,7 +163,7 @@ def rht16_te_block_columnwise_buffers(
         rows=rows,
         padded_width=padded_width,
         SIGN_MASK=sign_mask,
-        num_warps=8,
+        num_warps=4,
     )
     return q_col.view(torch.uint8), scale_col
 

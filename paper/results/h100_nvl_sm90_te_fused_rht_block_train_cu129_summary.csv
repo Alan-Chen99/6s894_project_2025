@@ -1,5 +1,5 @@
-shape,separate_preprocess_ms,fused_preprocess_ms,separate_train_pipeline_ms,fused_train_pipeline_ms,preprocess_fusion_speedup,train_pipeline_fusion_speedup
-square_4096,0.105664,0.117968,0.816944,0.858704,0.896,0.951
-square_8192,0.212880,0.233264,2.966288,2.991344,0.913,0.992
-llama_up,0.150832,0.162912,2.021872,2.032864,0.926,0.995
-llama_down,0.266864,0.309696,2.152272,2.190576,0.862,0.983
+shape,separate_preprocess_ms,fused_preprocess_ms,separate_forward_pipeline_ms,fused_forward_pipeline_ms,separate_backward_ms,fused_backward_ms,separate_train_pipeline_ms,fused_train_pipeline_ms,preprocess_fusion_speedup,forward_pipeline_fusion_speedup,backward_fusion_speedup,train_pipeline_fusion_speedup
+square_4096,0.105536,0.087456,0.354304,0.369312,0.490608,0.490816,0.842800,0.866736,1.207,0.959,1.000,0.972
+square_8192,0.223904,0.164368,1.101904,1.033136,2.222288,2.222688,2.976288,2.907952,1.362,1.067,1.000,1.023
+llama_up,0.176800,0.132576,0.691488,0.689888,1.337424,1.334192,2.198400,2.202224,1.334,1.002,1.002,0.998
+llama_down,0.282896,0.211984,1.048240,0.938240,1.377440,1.377232,2.391984,2.293232,1.335,1.117,1.000,1.043

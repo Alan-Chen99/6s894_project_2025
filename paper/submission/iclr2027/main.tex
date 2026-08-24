@@ -215,13 +215,14 @@ Wgrad.
 We implement this columnwise writer and the exact transpose transform
 $R^\top=HS/4$ for Dgrad. The transpose matches a dense reference exactly for
 FP16 and BF16, and Transformer Engine produces finite input and weight
-gradients. In randomized interleaved measurements on an H100 NVL, the complete
-fprop+Dgrad+Wgrad+inverse-RHT pipeline is within 0.5--1.7\% of the separate
-implementation at square-8192 and the two Llama projections; square-4096 is
-4.9\% slower. The fused two-view preprocessing remains 7--14\% slower because
-the H16 output is recomputed for independent columnwise scales. We report this
-as a separate architecture result rather than combining its absolute latency
-with the H100 80GB HBM3 tables.
+gradients. Tuning the rowwise and columnwise launch geometry for SM90 makes
+two-view preprocessing 1.21--1.36$\times$ faster than separate RHT plus
+Transformer Engine quantization. Split randomized measurements show that the
+backward pass, including Wgrad, Dgrad, and inverse RHT, is effectively tied at
+1.000--1.002$\times$. Forward ranges from 0.96$\times$ at square-4096 to
+1.12$\times$ for Llama down, and the complete training step ranges from
+0.97--1.04$\times$. We report this as a separate H100 NVL architecture result
+rather than combining its absolute latency with the H100 80GB HBM3 tables.
 
 \section{Limitations}
 The current timing results are single-process measurements and require

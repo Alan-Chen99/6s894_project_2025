@@ -102,12 +102,14 @@ Llama projections, the fused RHT pipeline is only 4.3%, 6.5%, and 2.4% slower
 than TE block-FP8 Linear without any rotation in the forward-only experiment.
 
 The training adapter now emits TE's independently scaled columnwise view for
-Wgrad and applies the exact transpose RHT to Dgrad. On a separate H100 NVL,
-the complete fused fprop+Dgrad+Wgrad+inverse-RHT pipeline is within 0.5--1.7%
-of separate RHT plus TE quantization at square-8192 and the Llama projections;
-square-4096 is 4.9% slower. The transpose matches the dense reference exactly,
-and both input and weight gradients are finite. Because this run uses an H100
-NVL, its absolute timings are kept separate from the H100 80GB HBM3 results.
+Wgrad and applies the exact transpose RHT to Dgrad. Tuning the direct writers
+for SM90 makes the two-view preprocessing stage 1.21--1.36x faster than
+separate RHT plus TE quantization. Split measurements show that backward is
+effectively tied (1.000--1.002x); forward ranges from 0.96x at square-4096 to
+1.12x for Llama down, and the full training step ranges from 0.97x to 1.04x.
+The transpose matches the dense reference exactly, and both input and weight
+gradients are finite. Because this run uses an H100 NVL, its absolute timings
+are kept separate from the H100 80GB HBM3 results.
 
 See `results/h100_sm90_summary.csv` for the derived table and `baselines/` for
 the external-baseline registry.

@@ -72,6 +72,30 @@ def measure_paired(fn_a, fn_b, warmup: int, iterations: int):
     return samples
 
 
+def measure_backward_paired(setup_a, setup_b, dy, warmup: int, iterations: int):
+    """Time only backward after each method's forward graph has completed."""
+    for _ in range(warmup):
+        for setup in (setup_a, setup_b):
+            y = setup()
+            y.backward(dy)
+    torch.cuda.synchronize()
+    samples = [[], []]
+    rng = random.Random(1234)
+    for _ in range(iterations):
+        order = (0, 1) if rng.random() < 0.5 else (1, 0)
+        for index in order:
+            setup = setup_a if index == 0 else setup_b
+            y = setup()
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            y.backward(dy)
+            end.record()
+            end.synchronize()
+            samples[index].append(start.elapsed_time(end))
+    return samples
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--shapes", nargs="+", choices=SHAPES, default=list(SHAPES))
@@ -153,6 +177,16 @@ def main() -> None:
             y.backward(dy)
             return y, x.grad, layer.weight.grad
 
+        def forward_step(make_input):
+            q = make_input()
+            with te.autocast(enabled=True, recipe=block_recipe):
+                return layer(q)
+
+        def backward_setup(make_input):
+            layer.zero_grad(set_to_none=True)
+            x.grad = None
+            return forward_step(make_input)
+
         separate_pre, fused_pre = measure_paired(
             separate_quantized_input, fused_quantized_input, args.warmup, args.iterations
         )
@@ -162,9 +196,26 @@ def main() -> None:
             args.warmup,
             args.iterations,
         )
+        separate_forward, fused_forward = measure_paired(
+            lambda: forward_step(separate_autograd_input),
+            lambda: forward_step(fused_autograd_input),
+            args.warmup,
+            args.iterations,
+        )
+        separate_backward, fused_backward = measure_backward_paired(
+            lambda: backward_setup(separate_autograd_input),
+            lambda: backward_setup(fused_autograd_input),
+            dy,
+            args.warmup,
+            args.iterations,
+        )
         samples_by_case = {
             "separate_preprocess": separate_pre,
             "fused_preprocess": fused_pre,
+            "separate_forward_pipeline": separate_forward,
+            "fused_forward_pipeline": fused_forward,
+            "separate_backward": separate_backward,
+            "fused_backward": fused_backward,
             "separate_train_pipeline": separate_train,
             "fused_train_pipeline": fused_train,
         }
@@ -177,6 +228,10 @@ def main() -> None:
             **{f"{name}_ms": value for name, value in medians.items()},
             "preprocess_fusion_speedup": medians["separate_preprocess"]
             / medians["fused_preprocess"],
+            "forward_pipeline_fusion_speedup": medians["separate_forward_pipeline"]
+            / medians["fused_forward_pipeline"],
+            "backward_fusion_speedup": medians["separate_backward"]
+            / medians["fused_backward"],
             "train_pipeline_fusion_speedup": medians["separate_train_pipeline"]
             / medians["fused_train_pipeline"],
             "samples_ms": samples_by_case,
@@ -184,6 +239,8 @@ def main() -> None:
         results.append(row)
         print(
             f"{shape_name:12s} preprocess {row['preprocess_fusion_speedup']:.3f}x "
+            f"forward {row['forward_pipeline_fusion_speedup']:.3f}x "
+            f"backward {row['backward_fusion_speedup']:.3f}x "
             f"train-pipeline {row['train_pipeline_fusion_speedup']:.3f}x",
             flush=True,
         )
