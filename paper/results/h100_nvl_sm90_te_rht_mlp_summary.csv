@@ -1,3 +1,3 @@
-comparison,baseline_forward_ms,fused_forward_ms,forward_speedup,baseline_train_ms,fused_train_ms,train_speedup
-separate_rht_then_te,2.224928,2.098384,1.060,6.315776,6.231072,1.014
-plain_te_block_fp8,2.077504,2.297488,0.904,6.943136,7.442368,0.933
+comparison,forward_speedup_median,forward_speedup_range,backward_speedup_median,backward_speedup_range,train_speedup_median,train_speedup_range
+separate_rht_then_te,1.054,1.053-1.059,1.020,1.009-1.021,1.027,1.015-1.034
+plain_te_block_fp8,0.940,0.932-0.945,NA,NA,0.943,0.943-0.953

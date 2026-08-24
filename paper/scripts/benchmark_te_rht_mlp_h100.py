@@ -19,7 +19,10 @@ from transformer_engine.common import recipe
 from transformer_engine.pytorch.ops.basic import SwiGLU
 
 sys.path.insert(0, str(Path("paper/rht").resolve()))
-from rht16_te_block import rht16_te_block_autograd  # noqa: E402
+from rht16_te_block import (  # noqa: E402
+    rht16_te_block_autograd,
+    swiglu_rht16_te_block_autograd,
+)
 from rht16_triton import rht16, rht16_autograd  # noqa: E402
 
 
@@ -37,6 +40,27 @@ def measure_paired(fn_a, fn_b, warmup: int, iterations: int):
             end = torch.cuda.Event(enable_timing=True)
             start.record()
             fn()
+            end.record()
+            end.synchronize()
+            samples[index].append(start.elapsed_time(end))
+    return samples
+
+
+def measure_backward_paired(setup_a, setup_b, dy, warmup: int, iterations: int):
+    """Time backward only after each method's forward graph is enqueued."""
+    for _ in range(warmup):
+        for setup in (setup_a, setup_b):
+            setup().backward(dy)
+    torch.cuda.synchronize()
+    samples = [[], []]
+    rng = random.Random(1234)
+    for _ in range(iterations):
+        for index in ((0, 1) if rng.random() < 0.5 else (1, 0)):
+            y = (setup_a if index == 0 else setup_b)()
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            y.backward(dy)
             end.record()
             end.synchronize()
             samples[index].append(start.elapsed_time(end))
@@ -87,16 +111,23 @@ def main() -> None:
         for layer in layers:
             layer.zero_grad(set_to_none=True)
 
-    def mlp(make_input) -> torch.Tensor:
+    def mlp(make_input, *, fuse_swiglu_rht: bool = False) -> torch.Tensor:
         qx = make_input(x)
         with te.autocast(enabled=True, recipe=block_recipe):
             if fc1 is not None:
-                hidden = swiglu(fc1(qx))
+                fc1_output = fc1(qx)
+                if fuse_swiglu_rht:
+                    qh = swiglu_rht16_te_block_autograd(fc1_output)
+                else:
+                    hidden = swiglu(fc1_output)
             else:
+                if fuse_swiglu_rht:
+                    raise ValueError("SwiGLU/RHT fusion requires combined FC1")
                 # The split layout intentionally reuses one quantized input.
                 gate_out, up_out = gate(qx), up(qx)
                 hidden = F.silu(gate_out) * up_out
-        qh = make_input(hidden.contiguous())
+        if not fuse_swiglu_rht:
+            qh = make_input(hidden.contiguous())
         with te.autocast(enabled=True, recipe=block_recipe):
             return down(qh)
 
@@ -109,14 +140,18 @@ def main() -> None:
     def plain_input(value: torch.Tensor):
         return value
 
-    def forward_step(make_input) -> torch.Tensor:
-        return mlp(make_input)
+    def forward_step(make_input, *, fuse_swiglu_rht: bool = False) -> torch.Tensor:
+        return mlp(make_input, fuse_swiglu_rht=fuse_swiglu_rht)
 
-    def train_step(make_input) -> torch.Tensor:
+    def train_step(make_input, *, fuse_swiglu_rht: bool = False) -> torch.Tensor:
         clear_grads()
-        y = mlp(make_input)
+        y = mlp(make_input, fuse_swiglu_rht=fuse_swiglu_rht)
         y.backward(dy)
         return y
+
+    def backward_setup(make_input, *, fuse_swiglu_rht: bool = False) -> torch.Tensor:
+        clear_grads()
+        return mlp(make_input, fuse_swiglu_rht=fuse_swiglu_rht)
 
     if args.profile_method is not None:
         methods = {
@@ -126,13 +161,13 @@ def main() -> None:
         }
         selected = methods[args.profile_method]
         for _ in range(args.warmup):
-            train_step(selected)
+            train_step(selected, fuse_swiglu_rht=args.profile_method == "fused")
         torch.cuda.synchronize()
         torch.cuda.cudart().cudaProfilerStart()
         torch.cuda.nvtx.range_push(
             f"{args.profile_method}_mlp_{args.fc1_layout}_{m}_{k}_{n}"
         )
-        train_step(selected)
+        train_step(selected, fuse_swiglu_rht=args.profile_method == "fused")
         torch.cuda.nvtx.range_pop()
         torch.cuda.synchronize()
         torch.cuda.cudart().cudaProfilerStop()
@@ -140,25 +175,32 @@ def main() -> None:
 
     separate_forward, fused_forward = measure_paired(
         lambda: forward_step(separate_input),
-        lambda: forward_step(fused_input),
+        lambda: forward_step(fused_input, fuse_swiglu_rht=True),
         args.warmup,
         args.iterations,
     )
     separate_train, fused_train = measure_paired(
         lambda: train_step(separate_input),
-        lambda: train_step(fused_input),
+        lambda: train_step(fused_input, fuse_swiglu_rht=True),
+        args.warmup,
+        args.iterations,
+    )
+    separate_backward, fused_backward = measure_backward_paired(
+        lambda: backward_setup(separate_input),
+        lambda: backward_setup(fused_input, fuse_swiglu_rht=True),
+        dy,
         args.warmup,
         args.iterations,
     )
     plain_forward, fused_control_forward = measure_paired(
         lambda: forward_step(plain_input),
-        lambda: forward_step(fused_input),
+        lambda: forward_step(fused_input, fuse_swiglu_rht=True),
         args.warmup,
         args.iterations,
     )
     plain_train, fused_control_train = measure_paired(
         lambda: train_step(plain_input),
-        lambda: train_step(fused_input),
+        lambda: train_step(fused_input, fuse_swiglu_rht=True),
         args.warmup,
         args.iterations,
     )
@@ -167,12 +209,14 @@ def main() -> None:
         "fused_forward_ms": statistics.median(fused_forward),
         "separate_train_ms": statistics.median(separate_train),
         "fused_train_ms": statistics.median(fused_train),
+        "separate_backward_ms": statistics.median(separate_backward),
+        "fused_backward_ms": statistics.median(fused_backward),
         "plain_te_forward_ms": statistics.median(plain_forward),
         "fused_control_forward_ms": statistics.median(fused_control_forward),
         "plain_te_train_ms": statistics.median(plain_train),
         "fused_control_train_ms": statistics.median(fused_control_train),
     }
-    check_y = train_step(fused_input)
+    check_y = train_step(fused_input, fuse_swiglu_rht=True)
     torch.cuda.synchronize()
     correctness = {
         "output_finite": bool(torch.isfinite(check_y).all()),
@@ -204,6 +248,8 @@ def main() -> None:
         / medians["fused_forward_ms"],
         "train_fusion_speedup": medians["separate_train_ms"]
         / medians["fused_train_ms"],
+        "backward_fusion_speedup": medians["separate_backward_ms"]
+        / medians["fused_backward_ms"],
         "fused_vs_plain_forward": medians["plain_te_forward_ms"]
         / medians["fused_control_forward_ms"],
         "fused_vs_plain_train": medians["plain_te_train_ms"]
@@ -213,6 +259,8 @@ def main() -> None:
             "fused_forward": fused_forward,
             "separate_train": separate_train,
             "fused_train": fused_train,
+            "separate_backward": separate_backward,
+            "fused_backward": fused_backward,
             "plain_te_forward": plain_forward,
             "fused_control_forward": fused_control_forward,
             "plain_te_train": plain_train,
@@ -232,6 +280,7 @@ def main() -> None:
     print(
         f"forward {payload['forward_fusion_speedup']:.3f}x; "
         f"train {payload['train_fusion_speedup']:.3f}x; "
+        f"backward {payload['backward_fusion_speedup']:.3f}x; "
         f"vs-plain forward {payload['fused_vs_plain_forward']:.3f}x; "
         f"vs-plain train {payload['fused_vs_plain_train']:.3f}x"
     )

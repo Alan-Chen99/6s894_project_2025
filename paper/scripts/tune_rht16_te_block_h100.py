@@ -62,6 +62,7 @@ def main() -> None:
             padded_rows=rows,
             BLOCK_M=block_m,
             SIGN_MASK=DEFAULT_SIGN_MASK,
+            SWIGLU=False,
             num_warps=4,
         )
         row_outputs.append((q.view(torch.uint8).clone(), row_scale.clone()))
@@ -89,6 +90,7 @@ def main() -> None:
                         padded_rows=rows,
                         BLOCK_M=block_m,
                         SIGN_MASK=DEFAULT_SIGN_MASK,
+                        SWIGLU=False,
                         num_warps=num_warps,
                         num_stages=num_stages,
                     )
@@ -122,6 +124,7 @@ def main() -> None:
                     rows=rows,
                     padded_width=width,
                     SIGN_MASK=DEFAULT_SIGN_MASK,
+                    SWIGLU=False,
                     num_warps=num_warps,
                     num_stages=num_stages,
                 )
@@ -149,11 +152,41 @@ def main() -> None:
                     padded_rows=rows,
                     padded_width=width,
                     SIGN_MASK=DEFAULT_SIGN_MASK,
+                    SWIGLU=False,
                     num_warps=num_warps,
                     num_stages=num_stages,
                 )
 
             elapsed = measure(launch_both)
+            print(
+                f"  warps={num_warps} stages={num_stages}: {elapsed:.6f} ms",
+                flush=True,
+            )
+
+    x_swiglu = torch.randn(rows, 2 * width, device="cuda", dtype=torch.bfloat16)
+    print("combined SwiGLU+rowwise+columnwise")
+    for num_warps in (4, 8):
+        for num_stages in (1, 2, 3):
+            def launch_swiglu_both(
+                num_warps: int = num_warps,
+                num_stages: int = num_stages,
+            ) -> None:
+                _rht16_te_block_both_kernel[(rows // 128, width // 128)](
+                    x_swiglu,
+                    q,
+                    row_scale,
+                    q_col,
+                    col_scale,
+                    rows=rows,
+                    padded_rows=rows,
+                    padded_width=width,
+                    SIGN_MASK=DEFAULT_SIGN_MASK,
+                    SWIGLU=True,
+                    num_warps=num_warps,
+                    num_stages=num_stages,
+                )
+
+            elapsed = measure(launch_swiglu_both)
             print(
                 f"  warps={num_warps} stages={num_stages}: {elapsed:.6f} ms",
                 flush=True,

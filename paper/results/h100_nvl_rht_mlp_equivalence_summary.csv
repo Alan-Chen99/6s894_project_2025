@@ -1,5 +1,5 @@
 quantity,float32_paired_relative_l2,bfloat16_paired_relative_l2,te_block_fp8_paired_relative_l2,te_block_fp8_plain_relative_l2
 output,0.000000519,0.006037,0.065629,0.065753
-input_gradient,0.000000454,0.006083,0.067521,0.068335
-fc1_weight_gradient,0.000000570,0.006126,0.068161,0.068415
+input_gradient,0.000000454,0.006083,0.067496,0.068335
+fc1_weight_gradient,0.000000570,0.006126,0.068169,0.068415
 fc2_weight_gradient,0.000000528,0.006031,0.065902,0.066061

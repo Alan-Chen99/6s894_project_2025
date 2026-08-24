@@ -20,8 +20,8 @@
   },
   "te_block_fp8_paired": {
     "output_relative_l2_vs_bf16": 0.06562856584787369,
-    "input_grad_relative_l2_vs_bf16": 0.06752122938632965,
-    "fc1_weight_grad_relative_l2_vs_bf16": 0.06816096603870392,
+    "input_grad_relative_l2_vs_bf16": 0.06749577820301056,
+    "fc1_weight_grad_relative_l2_vs_bf16": 0.06816886365413666,
     "fc2_weight_grad_relative_l2_vs_bf16": 0.06590214371681213,
     "all_finite": true
   },

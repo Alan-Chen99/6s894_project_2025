@@ -16,7 +16,10 @@ from transformer_engine.common import recipe
 from transformer_engine.pytorch.ops.basic import SwiGLU
 
 sys.path.insert(0, str(Path("paper/rht").resolve()))
-from rht16_te_block import rht16_te_block_autograd  # noqa: E402
+from rht16_te_block import (  # noqa: E402
+    rht16_te_block_autograd,
+    swiglu_rht16_te_block_autograd,
+)
 from rht16_triton import (  # noqa: E402
     reference_matrix,
     rht16,
@@ -107,8 +110,7 @@ def main() -> None:
     block_recipe = recipe.Float8BlockScaling()
     with te.autocast(enabled=True, recipe=block_recipe):
         z_te = fc1_te(rht16_te_block_autograd(x_te))
-        hidden_te = SwiGLU()(z_te)
-        y_te = fc2_te(rht16_te_block_autograd(hidden_te.contiguous()))
+        y_te = fc2_te(swiglu_rht16_te_block_autograd(z_te))
     (y_te.float() * dy.float()).sum().backward()
     fc1_grad_original_basis = rht16_transpose(
         fc1_te.weight.grad.contiguous().reshape(-1, 16)

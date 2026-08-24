@@ -110,16 +110,18 @@ full training step from 0.99--1.04x. Nsight measures 9.6% less GPU interval at
 square-4096 with unchanged GEMM and inverse-RHT costs.
 
 The Llama-shaped MLP test uses combined FC1, TE fused SwiGLU, a down projection,
-and matching input-axis rotations for both weights. Fused RHT/FP8 is
-1.060x/1.014x faster than separate RHT plus TE in forward/full training. FP32
-paired outputs and gradients agree within 5.7e-7 relative L2; BF16 differs by
+and matching input-axis rotations for both weights. The final Hopper hybrid
+keeps TE SwiGLU in forward and fuses inverse RHT with dSwiGLU in backward.
+Across three processes it is 1.054x/1.020x/1.027x faster than separate RHT plus
+TE in forward/backward/full training. FP32 paired outputs and gradients agree
+within 5.7e-7 relative L2; BF16 differs by
 about 0.6%. Paired TE block FP8 has 6.56--6.82% error against BF16, marginally
 below plain block FP8 for output and all three gradients. The benchmark rotates
 weights once outside timing; dynamic rotation, optimizer-state handling, and
 convergence remain. H100 NVL absolute timings stay separate from H100 HBM3.
 
 A paired-weight shape sweep finds the best forward result at the
-3584-to-18944 high-expansion shape with 8192 tokens: 1.073x forward and 1.021x
+3584-to-18944 high-expansion shape with 8192 tokens: 1.073x forward and 1.032x
 full training versus separate RHT plus TE. At 1024 tokens the same shape falls
 to 1.020x/1.008x, while an 8192-to-28672 case at 2048 tokens reaches
 1.025x/1.012x. High expansion plus enough tokens to saturate the fused writer
@@ -130,7 +132,8 @@ the external-baseline registry.
 
 ## Limitations before submission
 
-- Repeat the sweep in independent processes and report confidence intervals.
+- Repeat the remaining sweeps in independent processes and report confidence
+  intervals; the primary hybrid MLP currently has three process repetitions.
 - Randomize method order.
 - Validate against an independent FP32 reference, not only HadaCore.
 - Capture clocks, temperature, power, driver, compiler flags, and git status.

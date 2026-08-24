@@ -18,6 +18,7 @@ def _rht16_te_block_kernel(
     padded_rows: tl.constexpr,
     BLOCK_M: tl.constexpr,
     SIGN_MASK: tl.constexpr,
+    SWIGLU: tl.constexpr,
 ):
     row = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
     block_k = tl.program_id(1)
@@ -34,7 +35,9 @@ def _rht16_te_block_kernel(
     sign_bit = (SIGN_MASK >> i[:, None]) & 1
     h = tl.where((parity ^ sign_bit) != 0, -0.25, 0.25)
 
-    base = row[:, None] * tl.num_programs(1) * 128 + block_k * 128
+    width = tl.num_programs(1) * 128
+    input_width = 2 * width if SWIGLU else width
+    base = row[:, None] * input_width + block_k * 128
     mask = row[:, None] < rows
     x0 = tl.load(x_ptr + base + 0 * 16 + i[None, :], mask=mask)
     x1 = tl.load(x_ptr + base + 1 * 16 + i[None, :], mask=mask)
@@ -44,6 +47,23 @@ def _rht16_te_block_kernel(
     x5 = tl.load(x_ptr + base + 5 * 16 + i[None, :], mask=mask)
     x6 = tl.load(x_ptr + base + 6 * 16 + i[None, :], mask=mask)
     x7 = tl.load(x_ptr + base + 7 * 16 + i[None, :], mask=mask)
+    if SWIGLU:
+        u0 = tl.load(x_ptr + base + width + 0 * 16 + i[None, :], mask=mask)
+        u1 = tl.load(x_ptr + base + width + 1 * 16 + i[None, :], mask=mask)
+        u2 = tl.load(x_ptr + base + width + 2 * 16 + i[None, :], mask=mask)
+        u3 = tl.load(x_ptr + base + width + 3 * 16 + i[None, :], mask=mask)
+        u4 = tl.load(x_ptr + base + width + 4 * 16 + i[None, :], mask=mask)
+        u5 = tl.load(x_ptr + base + width + 5 * 16 + i[None, :], mask=mask)
+        u6 = tl.load(x_ptr + base + width + 6 * 16 + i[None, :], mask=mask)
+        u7 = tl.load(x_ptr + base + width + 7 * 16 + i[None, :], mask=mask)
+        x0 = (x0.to(tl.float32) * tl.sigmoid(x0.to(tl.float32)) * u0).to(x0.dtype)
+        x1 = (x1.to(tl.float32) * tl.sigmoid(x1.to(tl.float32)) * u1).to(x1.dtype)
+        x2 = (x2.to(tl.float32) * tl.sigmoid(x2.to(tl.float32)) * u2).to(x2.dtype)
+        x3 = (x3.to(tl.float32) * tl.sigmoid(x3.to(tl.float32)) * u3).to(x3.dtype)
+        x4 = (x4.to(tl.float32) * tl.sigmoid(x4.to(tl.float32)) * u4).to(x4.dtype)
+        x5 = (x5.to(tl.float32) * tl.sigmoid(x5.to(tl.float32)) * u5).to(x5.dtype)
+        x6 = (x6.to(tl.float32) * tl.sigmoid(x6.to(tl.float32)) * u6).to(x6.dtype)
+        x7 = (x7.to(tl.float32) * tl.sigmoid(x7.to(tl.float32)) * u7).to(x7.dtype)
     h = h.to(x0.dtype)
     y0 = tl.dot(x0, h, out_dtype=tl.float32)
     y1 = tl.dot(x1, h, out_dtype=tl.float32)
@@ -100,6 +120,7 @@ def rht16_te_block_buffers(
         padded_rows=padded_rows,
         BLOCK_M=block_m,
         SIGN_MASK=sign_mask,
+        SWIGLU=False,
         num_warps=4,
     )
     return q.view(torch.uint8), scale_inv
@@ -114,13 +135,19 @@ def _rht16_te_block_columnwise_kernel(
     rows: tl.constexpr,
     padded_width: tl.constexpr,
     SIGN_MASK: tl.constexpr,
+    SWIGLU: tl.constexpr,
 ):
     row_block = tl.program_id(0)
     group_k = tl.program_id(1)
     row = row_block * 128 + tl.arange(0, 128)
     i = tl.arange(0, 16)
     j = tl.arange(0, 16)
-    x = tl.load(x_ptr + row[:, None] * width + group_k * 16 + i[None, :])
+    input_width = 2 * width if SWIGLU else width
+    base = row[:, None] * input_width + group_k * 16 + i[None, :]
+    x = tl.load(x_ptr + base)
+    if SWIGLU:
+        up = tl.load(x_ptr + base + width)
+        x = (x.to(tl.float32) * tl.sigmoid(x.to(tl.float32)) * up).to(x.dtype)
 
     shared_bits = i[:, None] & j[None, :]
     parity = (
@@ -163,6 +190,7 @@ def rht16_te_block_columnwise_buffers(
         rows=rows,
         padded_width=padded_width,
         SIGN_MASK=sign_mask,
+        SWIGLU=False,
         num_warps=4,
     )
     return q_col.view(torch.uint8), scale_col
@@ -179,6 +207,7 @@ def _rht16_te_block_both_kernel(
     padded_rows: tl.constexpr,
     padded_width: tl.constexpr,
     SIGN_MASK: tl.constexpr,
+    SWIGLU: tl.constexpr,
 ):
     """Write both TE block-scaled views from one 128x128 RHT tile."""
     row_block = tl.program_id(0)
@@ -198,7 +227,8 @@ def _rht16_te_block_both_kernel(
     h = tl.where((parity ^ sign_bit) != 0, -0.25, 0.25)
 
     width = tl.num_programs(1) * 128
-    base = row[:, None] * width + block_k * 128
+    input_width = 2 * width if SWIGLU else width
+    base = row[:, None] * input_width + block_k * 128
     x0 = tl.load(x_ptr + base + 0 * 16 + i[None, :])
     x1 = tl.load(x_ptr + base + 1 * 16 + i[None, :])
     x2 = tl.load(x_ptr + base + 2 * 16 + i[None, :])
@@ -207,6 +237,23 @@ def _rht16_te_block_both_kernel(
     x5 = tl.load(x_ptr + base + 5 * 16 + i[None, :])
     x6 = tl.load(x_ptr + base + 6 * 16 + i[None, :])
     x7 = tl.load(x_ptr + base + 7 * 16 + i[None, :])
+    if SWIGLU:
+        u0 = tl.load(x_ptr + base + width + 0 * 16 + i[None, :])
+        u1 = tl.load(x_ptr + base + width + 1 * 16 + i[None, :])
+        u2 = tl.load(x_ptr + base + width + 2 * 16 + i[None, :])
+        u3 = tl.load(x_ptr + base + width + 3 * 16 + i[None, :])
+        u4 = tl.load(x_ptr + base + width + 4 * 16 + i[None, :])
+        u5 = tl.load(x_ptr + base + width + 5 * 16 + i[None, :])
+        u6 = tl.load(x_ptr + base + width + 6 * 16 + i[None, :])
+        u7 = tl.load(x_ptr + base + width + 7 * 16 + i[None, :])
+        x0 = (x0.to(tl.float32) * tl.sigmoid(x0.to(tl.float32)) * u0).to(x0.dtype)
+        x1 = (x1.to(tl.float32) * tl.sigmoid(x1.to(tl.float32)) * u1).to(x1.dtype)
+        x2 = (x2.to(tl.float32) * tl.sigmoid(x2.to(tl.float32)) * u2).to(x2.dtype)
+        x3 = (x3.to(tl.float32) * tl.sigmoid(x3.to(tl.float32)) * u3).to(x3.dtype)
+        x4 = (x4.to(tl.float32) * tl.sigmoid(x4.to(tl.float32)) * u4).to(x4.dtype)
+        x5 = (x5.to(tl.float32) * tl.sigmoid(x5.to(tl.float32)) * u5).to(x5.dtype)
+        x6 = (x6.to(tl.float32) * tl.sigmoid(x6.to(tl.float32)) * u6).to(x6.dtype)
+        x7 = (x7.to(tl.float32) * tl.sigmoid(x7.to(tl.float32)) * u7).to(x7.dtype)
     h = h.to(x0.dtype)
     y0 = tl.dot(x0, h, out_dtype=tl.float32)
     y1 = tl.dot(x1, h, out_dtype=tl.float32)
@@ -292,6 +339,51 @@ def rht16_te_block_both_buffers(
         padded_rows=padded_rows,
         padded_width=padded_width,
         SIGN_MASK=sign_mask,
+        SWIGLU=False,
+        num_warps=4,
+    )
+    return q.view(torch.uint8), row_scale, q_col.view(torch.uint8), col_scale
+
+
+def swiglu_rht16_te_block_both_buffers(
+    x: torch.Tensor, sign_mask: int = DEFAULT_SIGN_MASK
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Fuse SwiGLU, RHT, and both TE block-scaled output views."""
+    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError("input must be a CUDA FP16 or BF16 tensor")
+    if x.ndim != 2 or not x.is_contiguous() or x.shape[1] % 256:
+        raise ValueError("input must be contiguous [M,2K] with K divisible by 128")
+    rows, double_width = x.shape
+    width = double_width // 2
+    if rows % 128:
+        raise ValueError("TE block-scaled GEMM requires M divisible by 128")
+    padded_rows = triton.cdiv(rows, 4) * 4
+    padded_width = triton.cdiv(width, 4) * 4
+    q = torch.empty((rows, width), device=x.device, dtype=torch.float8_e4m3fn)
+    row_scale = torch.empty((width // 128, padded_rows), device=x.device, dtype=torch.float32)
+    q_col = torch.empty((width, rows), device=x.device, dtype=torch.float8_e4m3fn)
+    col_scale = torch.empty((rows // 128, padded_width), device=x.device, dtype=torch.float32)
+    block_m = 64
+    _rht16_te_block_kernel[(triton.cdiv(rows, block_m), width // 128)](
+        x,
+        q,
+        row_scale,
+        rows=rows,
+        padded_rows=padded_rows,
+        BLOCK_M=block_m,
+        SIGN_MASK=sign_mask,
+        SWIGLU=True,
+        num_warps=4,
+    )
+    _rht16_te_block_columnwise_kernel[(rows // 128, width // 16)](
+        x,
+        q_col,
+        col_scale,
+        width=width,
+        rows=rows,
+        padded_width=padded_width,
+        SIGN_MASK=sign_mask,
+        SWIGLU=True,
         num_warps=4,
     )
     return q.view(torch.uint8), row_scale, q_col.view(torch.uint8), col_scale
@@ -331,6 +423,78 @@ def rht16_te_block_tensor(x: torch.Tensor, quantizer=None, *, columnwise: bool =
     )
 
 
+def swiglu_rht16_te_block_tensor(x: torch.Tensor, quantizer=None):
+    """Create a TE tensor directly from a fused SwiGLU and RHT input."""
+    import transformer_engine.pytorch as te
+    from transformer_engine.pytorch.tensor.float8_blockwise_tensor import (
+        Float8BlockwiseQTensor,
+    )
+
+    if quantizer is None:
+        quantizer = te.Float8BlockQuantizer(
+            te.DType.kFloat8E4M3,
+            rowwise=True,
+            columnwise=True,
+            block_scaling_dim=1,
+        )
+    data, scale_inv, columnwise_data, columnwise_scale_inv = (
+        swiglu_rht16_te_block_both_buffers(x)
+    )
+    shape = (x.shape[0], x.shape[1] // 2)
+    return Float8BlockwiseQTensor(
+        shape=shape,
+        dtype=x.dtype,
+        fp8_dtype=te.DType.kFloat8E4M3,
+        rowwise_data=data,
+        rowwise_scale_inv=scale_inv,
+        columnwise_data=columnwise_data,
+        columnwise_scale_inv=columnwise_scale_inv,
+        quantizer=quantizer,
+        is_2D_scaled=False,
+        device=x.device,
+    )
+
+
+@triton.jit
+def _rht16_transpose_dswiglu_kernel(
+    grad_ptr,
+    input_ptr,
+    grad_input_ptr,
+    rows: tl.constexpr,
+    width: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    SIGN_MASK: tl.constexpr,
+):
+    """Fuse inverse RHT with the SwiGLU derivative."""
+    row = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+    group_k = tl.program_id(1)
+    i = tl.arange(0, 16)
+    j = tl.arange(0, 16)
+    grad = tl.load(grad_ptr + row[:, None] * width + group_k * 16 + i[None, :])
+
+    shared_bits = i[:, None] & j[None, :]
+    parity = (
+        (shared_bits & 1)
+        ^ ((shared_bits >> 1) & 1)
+        ^ ((shared_bits >> 2) & 1)
+        ^ ((shared_bits >> 3) & 1)
+    )
+    sign_bit = (SIGN_MASK >> j[None, :]) & 1
+    rt = tl.where((parity ^ sign_bit) != 0, -0.25, 0.25).to(grad.dtype)
+    grad_hidden = tl.dot(grad, rt, out_dtype=tl.float32)
+
+    input_width = 2 * width
+    base = row[:, None] * input_width + group_k * 16 + j[None, :]
+    gate = tl.load(input_ptr + base).to(tl.float32)
+    up = tl.load(input_ptr + base + width).to(tl.float32)
+    sigmoid = tl.sigmoid(gate)
+    silu = gate * sigmoid
+    grad_gate = grad_hidden * up * sigmoid * (1.0 + gate * (1.0 - sigmoid))
+    grad_up = grad_hidden * silu
+    tl.store(grad_input_ptr + base, grad_gate)
+    tl.store(grad_input_ptr + base + width, grad_up)
+
+
 class _RHT16TEBlockAutograd(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor):
@@ -348,3 +512,44 @@ def rht16_te_block_autograd(x: torch.Tensor):
     if not x.requires_grad:
         raise ValueError("autograd adapter requires input.requires_grad=True")
     return _RHT16TEBlockAutograd.apply(x)
+
+
+class _SwiGLURHT16TEBlockAutograd(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor):
+        ctx.save_for_backward(x)
+        # TE's dedicated SwiGLU kernel is faster on SM90 than folding sigmoid
+        # into the register-heavy bidirectional writer. Keep that forward path
+        # and fuse the inverse RHT with dSwiGLU in backward below.
+        import transformer_engine_torch as tex
+
+        hidden = tex.swiglu(x, None)
+        return rht16_te_block_tensor(hidden, columnwise=True)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        (x,) = ctx.saved_tensors
+        rows, double_width = x.shape
+        width = double_width // 2
+        grad_input = torch.empty_like(x)
+        block_m = 64
+        _rht16_transpose_dswiglu_kernel[
+            (triton.cdiv(rows, block_m), width // 16)
+        ](
+            grad_output.contiguous(),
+            x,
+            grad_input,
+            rows=rows,
+            width=width,
+            BLOCK_M=block_m,
+            SIGN_MASK=DEFAULT_SIGN_MASK,
+            num_warps=4,
+        )
+        return grad_input
+
+
+def swiglu_rht16_te_block_autograd(x: torch.Tensor):
+    """TE SwiGLU + RHT/FP8 forward with fused inverse-RHT SwiGLU backward."""
+    if not x.requires_grad:
+        raise ValueError("autograd adapter requires input.requires_grad=True")
+    return _SwiGLURHT16TEBlockAutograd.apply(x)

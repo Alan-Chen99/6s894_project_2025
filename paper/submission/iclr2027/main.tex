@@ -225,9 +225,13 @@ As a first block-level test, we use a Llama-shaped MLP with a combined
 $4096\rightarrow22016$ FC1, Transformer Engine fused SwiGLU, and a
 $11008\rightarrow4096$ down projection. We pair every activation RHT with the
 same transform on the corresponding weight input axis, using
-$(xR)(wR)^\top=xw^\top$. Fused RHT/FP8 is 1.060$\times$ faster in forward and
-1.014$\times$ faster for the full training step than separate RHT plus TE
-quantization. FP32 paired outputs and gradients agree within
+$(xR)(wR)^\top=xw^\top$. On Hopper, directly folding SwiGLU into the 128-by-128
+bidirectional writer is register-bound, so our final hybrid keeps TE SwiGLU in
+forward and fuses inverse RHT with dSwiGLU in backward. Across three independent
+processes, median speedups over separate RHT plus TE are 1.054$\times$ forward,
+1.020$\times$ backward, and 1.027$\times$ for the complete training step.
+The respective process ranges are 1.053--1.059$\times$,
+1.009--1.021$\times$, and 1.015--1.034$\times$. FP32 paired outputs and gradients agree within
 $4.5\times10^{-7}$--$5.7\times10^{-7}$ relative L2, while BF16 differs by about
 0.6\%. Paired TE block FP8 has 6.56--6.82\% relative error against BF16,
 marginally below plain block FP8 for the output and all three gradients. The
@@ -239,16 +243,16 @@ absolute latency with the H100 80GB HBM3 tables.
 A shape sweep further shows that model width alone does not determine the
 benefit. For a high-expansion $3584\rightarrow18944$ MLP, speedup grows from
 1.020$\times$/1.008$\times$ forward/training at 1024 tokens to
-1.073$\times$/1.021$\times$ at 8192 tokens. A $4096\rightarrow14336$ MLP at
+1.073$\times$/1.032$\times$ at 8192 tokens. A $4096\rightarrow14336$ MLP at
 4096 tokens reaches 1.059$\times$/1.021$\times$, whereas a larger
 $8192\rightarrow28672$ case at 2048 tokens reaches only
 1.025$\times$/1.012$\times$. This suggests that high FFN expansion and enough
 tokens to saturate the fused writer are more favorable than hidden width alone.
 
 \section{Limitations}
-The current timing results are single-process measurements and require
-independent repetitions, randomized method order, confidence intervals, and
-clock/power metadata. The H100 cannot provide native MXFP8 or NVFP4 throughput.
+The primary hybrid MLP has three independent process repetitions, while the
+remaining timing sweeps still require independent repetitions, confidence
+intervals, and clock/power metadata. The H100 cannot provide native MXFP8 or NVFP4 throughput.
 The patched Arthur baseline must be identified as a local BF16 compatibility
 patch rather than unmodified upstream. End-to-end training quality and
 time-to-accuracy remain to be established.
