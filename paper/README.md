@@ -101,15 +101,20 @@ pipeline speedup over the separate implementation. For square-8192 and the two
 Llama projections, the fused RHT pipeline is only 4.3%, 6.5%, and 2.4% slower
 than TE block-FP8 Linear without any rotation in the forward-only experiment.
 
-The training adapter now emits TE's independently scaled columnwise view for
-Wgrad and applies the exact transpose RHT to Dgrad. Tuning the direct writers
-for SM90 makes the two-view preprocessing stage 1.21--1.36x faster than
-separate RHT plus TE quantization. Split measurements show that backward is
-effectively tied (1.000--1.002x); forward ranges from 0.96x at square-4096 to
-1.12x for Llama down, and the full training step ranges from 0.97x to 1.04x.
-The transpose matches the dense reference exactly, and both input and weight
-gradients are finite. Because this run uses an H100 NVL, its absolute timings
-are kept separate from the H100 80GB HBM3 results.
+The training adapter emits TE's independently scaled columnwise view for Wgrad
+and applies the exact transpose RHT to Dgrad. A single 128x128 Triton tile now
+computes H16 once and writes both TE layouts, matching the two-writer output
+byte-for-byte and scale-for-scale. Two-view preprocessing is 1.20--1.37x faster
+than separate RHT plus TE quantization; forward ranges from 1.01--1.12x and the
+full training step from 0.99--1.04x. Nsight measures 9.6% less GPU interval at
+square-4096 with unchanged GEMM and inverse-RHT costs.
+
+The first Llama-shaped MLP dataflow test uses combined FC1, TE fused SwiGLU,
+and a down projection. Fused RHT/FP8 is 1.061x/1.017x faster than separate RHT
+plus TE in forward/full training, while retaining 94.4%/92.7% of plain TE
+block-FP8 throughput. This does not yet establish model equivalence: paired
+weight rotations and convergence tests remain. H100 NVL absolute timings stay
+separate from the H100 80GB HBM3 results.
 
 See `results/h100_sm90_summary.csv` for the derived table and `baselines/` for
 the external-baseline registry.

@@ -17,7 +17,13 @@ import transformer_engine.pytorch as te
 from transformer_engine.common import recipe
 
 sys.path.insert(0, str(Path("paper/rht").resolve()))
-from rht16_te_block import rht16_te_block_autograd, rht16_te_block_tensor  # noqa: E402
+from rht16_te_block import (  # noqa: E402
+    rht16_te_block_autograd,
+    rht16_te_block_both_buffers,
+    rht16_te_block_buffers,
+    rht16_te_block_columnwise_buffers,
+    rht16_te_block_tensor,
+)
 from rht16_triton import (  # noqa: E402
     reference_matrix,
     rht16,
@@ -111,11 +117,25 @@ def main() -> None:
         matrix = reference_matrix(device=check.device, dtype=dtype)
         transposed = rht16_transpose(check)
         roundtrip = rht16_transpose(rht16(check))
+        block_check = torch.randn(256, 256, device="cuda", dtype=dtype)
+        both_row, both_row_scale, both_col, both_col_scale = (
+            rht16_te_block_both_buffers(block_check)
+        )
+        ref_row, ref_row_scale = rht16_te_block_buffers(block_check)
+        ref_col, ref_col_scale = rht16_te_block_columnwise_buffers(block_check)
         correctness.append(
             {
                 "dtype": str(dtype).removeprefix("torch."),
                 "transpose_max_error": float((transposed - check @ matrix.T).abs().max()),
                 "roundtrip_max_error": float((roundtrip - check).abs().max()),
+                "combined_row_byte_agreement": float((both_row == ref_row).float().mean()),
+                "combined_row_scale_max_error": float(
+                    (both_row_scale - ref_row_scale).abs().max()
+                ),
+                "combined_col_byte_agreement": float((both_col == ref_col).float().mean()),
+                "combined_col_scale_max_error": float(
+                    (both_col_scale - ref_col_scale).abs().max()
+                ),
             }
         )
     check_x = torch.randn(

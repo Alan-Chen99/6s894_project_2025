@@ -168,6 +168,135 @@ def rht16_te_block_columnwise_buffers(
     return q_col.view(torch.uint8), scale_col
 
 
+@triton.jit
+def _rht16_te_block_both_kernel(
+    x_ptr,
+    q_ptr,
+    row_scale_ptr,
+    q_col_ptr,
+    col_scale_ptr,
+    rows: tl.constexpr,
+    padded_rows: tl.constexpr,
+    padded_width: tl.constexpr,
+    SIGN_MASK: tl.constexpr,
+):
+    """Write both TE block-scaled views from one 128x128 RHT tile."""
+    row_block = tl.program_id(0)
+    block_k = tl.program_id(1)
+    row = row_block * 128 + tl.arange(0, 128)
+    i = tl.arange(0, 16)
+    j = tl.arange(0, 16)
+
+    shared_bits = i[:, None] & j[None, :]
+    parity = (
+        (shared_bits & 1)
+        ^ ((shared_bits >> 1) & 1)
+        ^ ((shared_bits >> 2) & 1)
+        ^ ((shared_bits >> 3) & 1)
+    )
+    sign_bit = (SIGN_MASK >> i[:, None]) & 1
+    h = tl.where((parity ^ sign_bit) != 0, -0.25, 0.25)
+
+    width = tl.num_programs(1) * 128
+    base = row[:, None] * width + block_k * 128
+    x0 = tl.load(x_ptr + base + 0 * 16 + i[None, :])
+    x1 = tl.load(x_ptr + base + 1 * 16 + i[None, :])
+    x2 = tl.load(x_ptr + base + 2 * 16 + i[None, :])
+    x3 = tl.load(x_ptr + base + 3 * 16 + i[None, :])
+    x4 = tl.load(x_ptr + base + 4 * 16 + i[None, :])
+    x5 = tl.load(x_ptr + base + 5 * 16 + i[None, :])
+    x6 = tl.load(x_ptr + base + 6 * 16 + i[None, :])
+    x7 = tl.load(x_ptr + base + 7 * 16 + i[None, :])
+    h = h.to(x0.dtype)
+    y0 = tl.dot(x0, h, out_dtype=tl.float32)
+    y1 = tl.dot(x1, h, out_dtype=tl.float32)
+    y2 = tl.dot(x2, h, out_dtype=tl.float32)
+    y3 = tl.dot(x3, h, out_dtype=tl.float32)
+    y4 = tl.dot(x4, h, out_dtype=tl.float32)
+    y5 = tl.dot(x5, h, out_dtype=tl.float32)
+    y6 = tl.dot(x6, h, out_dtype=tl.float32)
+    y7 = tl.dot(x7, h, out_dtype=tl.float32)
+
+    row_amax = tl.maximum(tl.max(tl.abs(y0), axis=1), tl.max(tl.abs(y1), axis=1))
+    row_amax = tl.maximum(row_amax, tl.max(tl.abs(y2), axis=1))
+    row_amax = tl.maximum(row_amax, tl.max(tl.abs(y3), axis=1))
+    row_amax = tl.maximum(row_amax, tl.max(tl.abs(y4), axis=1))
+    row_amax = tl.maximum(row_amax, tl.max(tl.abs(y5), axis=1))
+    row_amax = tl.maximum(row_amax, tl.max(tl.abs(y6), axis=1))
+    row_amax = tl.maximum(row_amax, tl.max(tl.abs(y7), axis=1))
+    row_scale = tl.exp2(tl.ceil(tl.log2(tl.maximum(row_amax / 448.0, 1.0e-12))))
+
+    col_scale0 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y0), axis=0) / 448.0, 1.0e-12))))
+    col_scale1 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y1), axis=0) / 448.0, 1.0e-12))))
+    col_scale2 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y2), axis=0) / 448.0, 1.0e-12))))
+    col_scale3 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y3), axis=0) / 448.0, 1.0e-12))))
+    col_scale4 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y4), axis=0) / 448.0, 1.0e-12))))
+    col_scale5 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y5), axis=0) / 448.0, 1.0e-12))))
+    col_scale6 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y6), axis=0) / 448.0, 1.0e-12))))
+    col_scale7 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y7), axis=0) / 448.0, 1.0e-12))))
+
+    tl.store(q_ptr + base + 0 * 16 + j[None, :], y0 / row_scale[:, None])
+    tl.store(q_ptr + base + 1 * 16 + j[None, :], y1 / row_scale[:, None])
+    tl.store(q_ptr + base + 2 * 16 + j[None, :], y2 / row_scale[:, None])
+    tl.store(q_ptr + base + 3 * 16 + j[None, :], y3 / row_scale[:, None])
+    tl.store(q_ptr + base + 4 * 16 + j[None, :], y4 / row_scale[:, None])
+    tl.store(q_ptr + base + 5 * 16 + j[None, :], y5 / row_scale[:, None])
+    tl.store(q_ptr + base + 6 * 16 + j[None, :], y6 / row_scale[:, None])
+    tl.store(q_ptr + base + 7 * 16 + j[None, :], y7 / row_scale[:, None])
+    tl.store(row_scale_ptr + block_k * padded_rows + row, row_scale)
+
+    col_base = block_k * 128 + j
+    tl.store(q_col_ptr + row[:, None] + (col_base + 0 * 16)[None, :] * rows, y0 / col_scale0[None, :])
+    tl.store(q_col_ptr + row[:, None] + (col_base + 1 * 16)[None, :] * rows, y1 / col_scale1[None, :])
+    tl.store(q_col_ptr + row[:, None] + (col_base + 2 * 16)[None, :] * rows, y2 / col_scale2[None, :])
+    tl.store(q_col_ptr + row[:, None] + (col_base + 3 * 16)[None, :] * rows, y3 / col_scale3[None, :])
+    tl.store(q_col_ptr + row[:, None] + (col_base + 4 * 16)[None, :] * rows, y4 / col_scale4[None, :])
+    tl.store(q_col_ptr + row[:, None] + (col_base + 5 * 16)[None, :] * rows, y5 / col_scale5[None, :])
+    tl.store(q_col_ptr + row[:, None] + (col_base + 6 * 16)[None, :] * rows, y6 / col_scale6[None, :])
+    tl.store(q_col_ptr + row[:, None] + (col_base + 7 * 16)[None, :] * rows, y7 / col_scale7[None, :])
+    scale_base = row_block * padded_width + block_k * 128 + j
+    tl.store(col_scale_ptr + scale_base + 0 * 16, col_scale0)
+    tl.store(col_scale_ptr + scale_base + 1 * 16, col_scale1)
+    tl.store(col_scale_ptr + scale_base + 2 * 16, col_scale2)
+    tl.store(col_scale_ptr + scale_base + 3 * 16, col_scale3)
+    tl.store(col_scale_ptr + scale_base + 4 * 16, col_scale4)
+    tl.store(col_scale_ptr + scale_base + 5 * 16, col_scale5)
+    tl.store(col_scale_ptr + scale_base + 6 * 16, col_scale6)
+    tl.store(col_scale_ptr + scale_base + 7 * 16, col_scale7)
+
+
+def rht16_te_block_both_buffers(
+    x: torch.Tensor, sign_mask: int = DEFAULT_SIGN_MASK
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return rowwise and columnwise TE buffers from one RHT evaluation."""
+    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError("input must be a CUDA FP16 or BF16 tensor")
+    if x.ndim != 2 or not x.is_contiguous() or x.shape[1] % 128:
+        raise ValueError("input must be contiguous [M,K] with K divisible by 128")
+    rows, width = x.shape
+    if rows % 128:
+        raise ValueError("TE block-scaled GEMM requires M divisible by 128")
+    padded_rows = triton.cdiv(rows, 4) * 4
+    padded_width = triton.cdiv(width, 4) * 4
+    q = torch.empty_like(x, dtype=torch.float8_e4m3fn)
+    row_scale = torch.empty((width // 128, padded_rows), device=x.device, dtype=torch.float32)
+    q_col = torch.empty((width, rows), device=x.device, dtype=torch.float8_e4m3fn)
+    col_scale = torch.empty((rows // 128, padded_width), device=x.device, dtype=torch.float32)
+    _rht16_te_block_both_kernel[(rows // 128, width // 128)](
+        x,
+        q,
+        row_scale,
+        q_col,
+        col_scale,
+        rows=rows,
+        padded_rows=padded_rows,
+        padded_width=padded_width,
+        SIGN_MASK=sign_mask,
+        num_warps=4,
+    )
+    return q.view(torch.uint8), row_scale, q_col.view(torch.uint8), col_scale
+
+
 def rht16_te_block_tensor(x: torch.Tensor, quantizer=None, *, columnwise: bool = False):
     """Create a TE Float8BlockwiseQTensor without a requantization kernel."""
     import transformer_engine.pytorch as te
@@ -182,11 +311,12 @@ def rht16_te_block_tensor(x: torch.Tensor, quantizer=None, *, columnwise: bool =
             columnwise=columnwise,
             block_scaling_dim=1,
         )
-    data, scale_inv = rht16_te_block_buffers(x)
     columnwise_data = None
     columnwise_scale_inv = None
     if columnwise:
-        columnwise_data, columnwise_scale_inv = rht16_te_block_columnwise_buffers(x)
+        data, scale_inv, columnwise_data, columnwise_scale_inv = rht16_te_block_both_buffers(x)
+    else:
+        data, scale_inv = rht16_te_block_buffers(x)
     return Float8BlockwiseQTensor(
         shape=x.shape,
         dtype=x.dtype,

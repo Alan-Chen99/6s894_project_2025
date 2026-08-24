@@ -212,17 +212,24 @@ For square-8192, Llama up, and Llama down, the fused rotation adds only 4.3\%,
 to the backward path requires the independently scaled columnwise view used by
 Wgrad.
 
-We implement this columnwise writer and the exact transpose transform
-$R^\top=HS/4$ for Dgrad. The transpose matches a dense reference exactly for
-FP16 and BF16, and Transformer Engine produces finite input and weight
-gradients. Tuning the rowwise and columnwise launch geometry for SM90 makes
-two-view preprocessing 1.21--1.36$\times$ faster than separate RHT plus
-Transformer Engine quantization. Split randomized measurements show that the
-backward pass, including Wgrad, Dgrad, and inverse RHT, is effectively tied at
-1.000--1.002$\times$. Forward ranges from 0.96$\times$ at square-4096 to
-1.12$\times$ for Llama down, and the complete training step ranges from
-0.97--1.04$\times$. We report this as a separate H100 NVL architecture result
-rather than combining its absolute latency with the H100 80GB HBM3 tables.
+We implement the columnwise view and exact transpose $R^\top=HS/4$ for Dgrad.
+A single 128-by-128 Triton tile computes H16 once, reduces along both axes, and
+writes both TE layouts. It matches the two-writer implementation byte-for-byte
+and scale-for-scale. Two-view preprocessing is 1.20--1.37$\times$ faster than
+separate RHT plus TE quantization. Forward ranges from 1.01--1.12$\times$ and
+the complete training step from 0.99--1.04$\times$. Nsight Systems measures a
+9.6\% reduction in the square-4096 GPU interval with unchanged GEMM and inverse
+RHT costs.
+
+As a first block-level test, we use a Llama-shaped MLP with a combined
+$4096\rightarrow22016$ FC1, Transformer Engine fused SwiGLU, and a
+$11008\rightarrow4096$ down projection. Fused RHT/FP8 is 1.061$\times$ faster
+in forward and 1.017$\times$ faster for the full training step than separate
+RHT plus TE quantization. It retains 94.4\% and 92.7\% of the corresponding
+plain block-FP8 throughput. This is a performance dataflow experiment rather
+than a model-equivalence result; paired weight rotations and convergence remain
+future work. We report these as separate H100 NVL architecture results rather
+than mixing their absolute latency with the H100 80GB HBM3 tables.
 
 \section{Limitations}
 The current timing results are single-process measurements and require

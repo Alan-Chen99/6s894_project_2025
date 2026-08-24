@@ -13,6 +13,7 @@ import triton
 
 sys.path.insert(0, str(Path("paper/rht").resolve()))
 from rht16_te_block import (  # noqa: E402
+    _rht16_te_block_both_kernel,
     _rht16_te_block_columnwise_kernel,
     _rht16_te_block_kernel,
 )
@@ -126,6 +127,33 @@ def main() -> None:
                 )
 
             elapsed = measure(launch_col)
+            print(
+                f"  warps={num_warps} stages={num_stages}: {elapsed:.6f} ms",
+                flush=True,
+            )
+
+    print("combined rowwise+columnwise")
+    for num_warps in (4, 8):
+        for num_stages in (1, 2, 3):
+            def launch_both(
+                num_warps: int = num_warps,
+                num_stages: int = num_stages,
+            ) -> None:
+                _rht16_te_block_both_kernel[(rows // 128, width // 128)](
+                    x,
+                    q,
+                    row_scale,
+                    q_col,
+                    col_scale,
+                    rows=rows,
+                    padded_rows=rows,
+                    padded_width=width,
+                    SIGN_MASK=DEFAULT_SIGN_MASK,
+                    num_warps=num_warps,
+                    num_stages=num_stages,
+                )
+
+            elapsed = measure(launch_both)
             print(
                 f"  warps={num_warps} stages={num_stages}: {elapsed:.6f} ms",
                 flush=True,
