@@ -199,6 +199,18 @@ for square-4096. When both paths include RHT, delayed FP8 is 1.30$\times$,
 down. This measures forward pipeline cost; direct integration with Transformer
 Engine quantized tensors and training backward passes remains future work.
 
+We next implement a direct Hopper adapter. A single Triton kernel applies eight
+H16 transforms per Transformer Engine scaling block, computes power-of-two
+block-128 scales, and writes E4M3 bytes directly into the rowwise storage of a
+\texttt{Float8BlockwiseQTensor}; no second quantization kernel is required. The
+inverse scales match Transformer Engine exactly and reconstruction MSE equals
+the separate RHT-then-quantize reference for FP16 and BF16. Fusion makes the
+RHT-plus-quantization stage 1.27--1.34$\times$ faster and the complete forward
+Linear pipeline 1.02--1.10$\times$ faster than the separate implementation.
+For square-8192, Llama up, and Llama down, the fused rotation adds only 4.3\%,
+6.5\%, and 2.4\% over block-FP8 Linear without rotation. Extending the adapter
+to the backward path remains future work.
+
 \section{Limitations}
 The current timing results are single-process measurements and require
 independent repetitions, randomized method order, confidence intervals, and

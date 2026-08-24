@@ -20,7 +20,7 @@ over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
 | H100 standalone baselines | Results captured | Repeat randomized-order runs and confidence intervals | H100 |
 | Instruction profiling | Results captured | Add opcode/SASS categorization and independent profile repetition | H100 |
 | Random Hadamard transform | Prototype measured | Replace Triton prototype with/integrate into the CUDA path | H100 |
-| H16 RHT + quantization | Pipeline cost measured | Implement TE quantized-tensor adapter and training integration | H100 initially |
+| H16 RHT + quantization | Direct TE adapter measured | Add backward/training integration and model-derived tensors | H100 initially |
 | Native FP8 | Linear baseline measured | Test model-derived tensors and quantify RHT impact | H100 |
 | MXFP8 | Hardware blocked | Benchmark block-32 E8M0-scaled path | SM100+ Blackwell |
 | NVFP4 | Hardware blocked | Benchmark H16 RHT + block-16 E4M3 scaling + E2M1 output | SM100+ Blackwell |
@@ -49,6 +49,16 @@ than BF16 plus RHT. For the Llama up projection those values are 1.13x and
 1.13x faster than BF16 plus RHT. Square-4096 does not amortize the transform.
 This is a forward pipeline-cost experiment, not yet a direct TE quantized-
 tensor integration or an end-to-end training result.
+
+The follow-up implements that direct Hopper adapter: one Triton kernel applies
+eight H16 transforms per TE block, computes TE-compatible power-of-two block-
+128 scales, writes E4M3 bytes in TE's rowwise layout, and wraps the buffers as
+a `Float8BlockwiseQTensor` with no requantization kernel. Scales match TE's
+reference exactly and reconstruction MSE is identical for FP16 and BF16. The
+fused quantizer is 1.27--1.34x faster than separate RHT then TE quantization;
+the complete TE Linear pipeline is 1.02--1.10x faster than the separate
+pipeline. At the three larger shapes, fused RHT adds only 2.4--6.5% over a
+plain block-FP8 TE Linear. Backward integration remains pending.
 
 ## Low-precision decision
 

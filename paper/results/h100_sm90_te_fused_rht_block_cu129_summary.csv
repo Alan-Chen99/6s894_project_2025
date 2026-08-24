@@ -1,0 +1,5 @@
+shape,te_block_plain_ms,separate_rht_quantize_ms,fused_rht_quantize_ms,separate_pipeline_ms,fused_pipeline_ms,quantizer_fusion_speedup,pipeline_fusion_speedup,fused_overhead_vs_plain_pct
+square_4096,0.233040,0.088560,0.069072,0.317088,0.287728,1.282,1.102,23.467
+square_8192,0.599280,0.145072,0.108320,0.638464,0.625232,1.339,1.021,4.331
+llama_up,0.443136,0.093664,0.073744,0.499744,0.471792,1.270,1.059,6.467
+llama_down,0.470064,0.188544,0.141136,0.522704,0.481424,1.336,1.086,2.417

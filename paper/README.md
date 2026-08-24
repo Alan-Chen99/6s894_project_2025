@@ -92,6 +92,15 @@ BF16 plus the same RHT, delayed FP8 is 1.30x, 1.27x, and 1.13x faster for
 square-8192, Llama up, and Llama down. This isolates forward pipeline cost; it
 is not a TE quantized-tensor adapter or a training benchmark.
 
+We subsequently implemented a direct Hopper adapter that fuses eight H16
+transforms with TE-compatible block-128 power-of-two scaling and writes a
+`Float8BlockwiseQTensor` without requantization. Its scales exactly match TE
+and its reconstruction MSE is identical to separate RHT plus TE quantization.
+The fused quantizer is 1.27--1.34x faster, producing a 1.02--1.10x full forward
+pipeline speedup over the separate implementation. For square-8192 and the two
+Llama projections, the fused RHT pipeline is only 4.3%, 6.5%, and 2.4% slower
+than TE block-FP8 Linear without any rotation. Backward remains unintegrated.
+
 See `results/h100_sm90_summary.csv` for the derived table and `baselines/` for
 the external-baseline registry.
 
