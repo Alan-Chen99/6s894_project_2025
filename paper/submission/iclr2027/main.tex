@@ -27,16 +27,18 @@ than HadaCore, Tri Dao's CUDA implementation, FlagGems Triton, and a patched
 Triton tensor-core baseline, respectively. Nsight Compute shows
 2.02--3.60$\times$ fewer dynamically executed warp instructions than HadaCore
 across representative transform sizes. We also fuse a randomized H16 transform
-with Transformer Engine block-FP8 quantization. On a Llama-shaped MLP, the
+with Transformer Engine block-FP8 quantization. On an H100 NVL and a
+Llama-shaped MLP, the
 fused path is 1.974$\times$ faster for forward plus backward than a
 functionality-matched composition of unmodified Tri Dao H16, stock PyTorch
-signs, and unmodified Transformer Engine, while remaining 5.4\% slower than
-Transformer Engine with the RHT omitted. Native NVFP4 results remain pending.
+signs, and unmodified Transformer Engine, while adding 5.7\% latency relative
+to Transformer Engine with the RHT omitted. Native NVFP4 results remain pending.
 \end{abstract}
 
 \section{Introduction}
 Hadamard rotations are a simple and effective way to redistribute outliers
-before aggressive quantization. This makes their systems cost important:
+before aggressive quantization \citep{TODO_hadamard_quantization}. This makes
+their systems cost important:
 an otherwise inexpensive rotation may require extra reads and writes around a
 much faster FP8 or FP4 matrix multiplication. We ask whether tensor cores can
 execute a standalone FWHT at the memory roofline and whether the same layout
@@ -73,6 +75,16 @@ Blackwell-class hardware. We therefore use Hopper to evaluate the FWHT,
 profiling, fused RHT mechanics, and an FP8 quantization pipeline; native NVFP4
 end-to-end measurements are reserved for Blackwell.
 
+\section{Related work}
+GPU FWHT implementations span CUDA and Triton kernels, including HadaCore,
+Tri Dao's CUDA implementation, FlagGems, and tensor-core decompositions
+\citep{TODO_hadacore,TODO_tri_dao_fwht,TODO_flaggems,TODO_arthur_fwht}.
+Hadamard rotations are also used to reduce quantization outliers in low-precision
+inference and training \citep{TODO_hadamard_quantization}. Transformer Engine
+provides the FP8 and NVFP4 training paths used in our application study
+\citep{TODO_transformer_engine_fp8}. \utkarsh{TODO: Complete related work and
+separate standalone FWHT kernels from rotation-aware quantization systems.}
+
 \section{Tensor-core FWHT}
 \label{sec:method}
 The implementation decomposes the transform into tensor-core-compatible
@@ -81,6 +93,9 @@ layout useful to the next stage. Small transforms remain entirely in
 registers. Larger transforms use shared memory between two phases and overlap
 global-to-shared movement with computation. Normalization is folded into the
 constant Hadamard operands.
+
+\utkarsh{TODO: Add the register-layout and transform-order diagram; move full
+tiling, permutation, and pipeline details to the appendix.}
 
 The central systems hypothesis is that layout selection removes explicit
 permutation, address-generation, and data-movement instructions. Section
@@ -94,6 +109,11 @@ We evaluate an NVIDIA H100 80GB HBM3 GPU with PyTorch 2.9.1+cu128 and CUDA
 $2^{30}$ FP16 or BF16 elements for 400 timed in-place transforms. All baselines
 use the same normalization, shape, stream semantics, and preallocated tensors.
 Compilation and JIT time are excluded.
+
+\utkarsh{TODO: Define effective bandwidth and the empirical AddOne roofline,
+report correctness tolerances, and repeat the standalone table across
+independent processes with uncertainty, clocks, power, driver, and compiler
+flags.}
 
 \begin{table}[t]
 \caption{Speedup of our kernel over matched baselines on H100. Values below
@@ -169,10 +189,26 @@ is to combine output storage with amax/scaling and quantization, eliminating
 full-tensor intermediate memory passes. Section~\ref{sec:rht-results} evaluates
 this design.
 
+\paragraph{Transformer Engine adapter.}
+One 128-by-128 Triton tile applies eight H16 transforms per block and emits
+Transformer Engine's independently scaled rowwise and columnwise block-FP8
+views. The backward path applies the exact transpose $R^\top=HS/4$ to Dgrad;
+the SwiGLU variant fuses this inverse transform with dSwiGLU.
+
+\paragraph{Dynamic weights and optimizer.}
+FP32 AdamW masters and moments remain in the original basis. Each step writes
+$WR$ directly into Transformer Engine's block-FP8 weight storage and maps BF16
+Wgrad through $R^\top$. The final optimizer kernel combines inverse H16, FP32
+moment updates, weight decay, and the original-basis parameter update.
+
 \section{RHT--FP8 evaluation}
 \label{sec:rht-results}
 
-Our preliminary H100 prototype processes 67.1M elements. Plain H16 RHT is
+\utkarsh{TODO: Add the H100 NVL setup: PyTorch, CUDA, Transformer Engine,
+dtype, exact MLP shapes, warmups, iterations, timing boundaries, and profiler
+configuration.}
+
+The H100 fusion prototype processes 67.1M elements. Plain H16 RHT is
 within 2.3\% of a dense H16 matmul reference and matches it exactly at the
 output dtype. Fusing RHT, per-16 amax/scaling, and E4M3 output reduces latency
 from 1.578 to 0.262~ms for FP16 input and from 1.580 to 0.264~ms for BF16 input,
@@ -190,44 +226,36 @@ speedups are 1.47$\times$ and 1.41$\times$. FP8 block scaling reaches
 1.17$\times$/1.34$\times$ for forward/combined measurement at the square
 8192 shape and 1.26$\times$ combined for both Llama projections. Conversely,
 all FP8 recipes trail BF16 for the smaller $4096^3$ forward GEMM, showing that
-quantization overhead creates a workload-size crossover. These are preliminary
-linear-layer microbenchmarks rather than end-to-end results. Model-derived
-distributions, direct RHT integration, and native NVFP4 Blackwell experiments
-remain pending.
+quantization overhead creates a workload-size crossover. These linear-layer
+microbenchmarks establish component-level controls for the directly integrated
+path below; they are not end-to-end model results.
 
-As a first integration-cost experiment, we apply the fixed-sign H16 transform
+A forward-only integration-cost experiment applies the fixed-sign H16 transform
 to BF16 activations immediately before the same Transformer Engine Linear. The
 delayed-scaling FP8 pipeline, including RHT, is 1.19$\times$ faster than plain
 BF16 Linear for square-8192 and 1.13$\times$ faster for the Llama up
 projection. It is approximately tied for Llama down (0.98$\times$) and slower
 for square-4096. When both paths include RHT, delayed FP8 is 1.30$\times$,
 1.27$\times$, and 1.13$\times$ faster for square-8192, Llama up, and Llama
-down. This measures forward pipeline cost; direct integration with Transformer
-Engine quantized tensors and training backward passes remains future work.
+down. This forward-only measurement is retained as a component ablation; the
+directly integrated forward and backward path follows.
 
-We next implement a direct Hopper adapter. A single Triton kernel applies eight
-H16 transforms per Transformer Engine scaling block, computes power-of-two
-block-128 scales, and writes E4M3 bytes directly into the rowwise storage of a
-\texttt{Float8BlockwiseQTensor}; no second quantization kernel is required. The
-inverse scales match Transformer Engine exactly and reconstruction MSE equals
+The direct Hopper adapter's inverse scales match Transformer Engine exactly,
+and reconstruction MSE equals
 the separate RHT-then-quantize reference for FP16 and BF16. Fusion makes the
 RHT-plus-quantization stage 1.27--1.34$\times$ faster and the complete forward
 Linear pipeline 1.02--1.10$\times$ faster than the separate implementation.
 For square-8192, Llama up, and Llama down, the fused rotation adds only 4.3\%,
-6.5\%, and 2.4\% over block-FP8 Linear without rotation. Extending the adapter
-to the backward path requires the independently scaled columnwise view used by
-Wgrad.
+6.5\%, and 2.4\% over block-FP8 Linear without rotation.
 
-We implement the columnwise view and exact transpose $R^\top=HS/4$ for Dgrad.
-A single 128-by-128 Triton tile computes H16 once, reduces along both axes, and
-writes both TE layouts. It matches the two-writer implementation byte-for-byte
+The bidirectional writer matches the two-writer implementation byte-for-byte
 and scale-for-scale. Two-view preprocessing is 1.20--1.37$\times$ faster than
 separate RHT plus TE quantization. Forward ranges from 1.01--1.12$\times$ and
-the complete training step from 0.99--1.04$\times$. Nsight Systems measures a
+forward plus backward from 0.99--1.04$\times$. Nsight Systems measures a
 9.6\% reduction in the square-4096 GPU interval with unchanged GEMM and inverse
 RHT costs.
 
-As a first block-level test, we use a Llama-shaped MLP with a combined
+For the block-level evaluation, we use a Llama-shaped MLP with a combined
 $4096\rightarrow22016$ FC1, Transformer Engine fused SwiGLU, and a
 $11008\rightarrow4096$ down projection. We pair every activation RHT with the
 same transform on the corresponding weight input axis, using
@@ -244,16 +272,17 @@ marginally below plain block FP8 for the output and all three gradients. We
 report these as separate H100 NVL architecture results rather than mixing their
 absolute latency with the H100 80GB HBM3 tables.
 
-That first comparison is an internal fusion ablation. Our
+The preceding project-RHT comparison is an internal fusion ablation. Our
 functionality-matched external baseline instead uses the unmodified Tri Dao H16
 kernel at pinned commit \texttt{e7706faf}, a separate stock PyTorch BF16
 multiply for the fixed Rademacher signs, and unmodified TE 2.18 block FP8. The
 external and project RHT outputs match bit-for-bit in BF16.
 
 \begin{table}[t]
-\caption{Llama-shaped MLP latency on H100 NVL. The external path composes
-unmodified Tri Dao H16, stock PyTorch signs, and unmodified TE block FP8.
-Values are medians across three independently started processes.}
+\caption{BF16 Llama-shaped MLP latency on H100 NVL with 4096 tokens, hidden
+size 4096, and intermediate size 11008. The external path composes unmodified
+Tri Dao H16, stock PyTorch signs, and unmodified TE block FP8. Values are
+medians across three independently started processes.}
 \label{tab:rht-external}
 \centering
 \small
@@ -276,11 +305,11 @@ path is 0.941$\times$ in forward and 0.946$\times$ for forward plus backward.
 The 1.974$\times$ result therefore measures an RHT-enabled pipeline, not a
 speedup over omitting RHT.
 
-We then implement optimizer-correct dynamic weights. FP32 AdamW masters and
-moments remain in the original basis; one kernel writes $WR$ directly into
-Transformer Engine's native 128-by-128 2D block-FP8 weight storage, and BF16
-Wgrad is mapped through $R^\top$ before the optimizer. Both quantized views and
-all valid scales match the Transformer Engine reference exactly, while the
+\utkarsh{TODO: Repeat the RHT comparison across sign seeds or per-layer masks
+and report confidence intervals rather than only process ranges.}
+
+For dynamic weights, both quantized views and all valid scales match the
+Transformer Engine reference exactly, while the
 mapped gradient has $1.85\times10^{-9}$ relative L2 error and the AdamW update
 is identical to a dense reference. In a controlled 120-step teacher--student
 SwiGLU regression, dynamic RHT block FP8 ends at 0.001847 MSE versus 0.001907
@@ -294,10 +323,9 @@ Both dynamic routes remain approximately 18--19\% slower than paired static
 controls. These measurements exclude AdamW kernels and identify dynamic
 materialization and gradient mapping as the remaining systems cost.
 
-We therefore fuse inverse H16, FP32 Adam moments, decoupled weight decay, and
-the original-basis parameter update in one kernel. An independently allocated
-two-path check matches quantized weight bytes, outputs, losses, and working
-gradients exactly; after one update, master and moment relative L2 errors are at
+The fused optimizer passes an independently allocated two-path check: quantized
+weight bytes, outputs, losses, and working gradients match exactly; after one
+update, master and moment relative L2 errors are at
 most $4.8\times10^{-8}$ and $2.4\times10^{-7}$. In the exact one-to-one
 pipeline, forward is 1.000$\times$ and backward 0.997$\times$. Across three
 processes for a 4096-token $4096\rightarrow22016\rightarrow4096$ SwiGLU MLP,
@@ -313,6 +341,9 @@ range falls from 67 GPU operations and 9.525 ms projected GPU interval to 11
 operations and 6.810 ms, while the optimizer-only range falls from 58
 operations/3.903 ms to two operations/1.172 ms (one fused update per weight).
 
+\utkarsh{TODO: Repeat convergence across seeds and add model-derived
+activations plus language-model time-to-quality.}
+
 Separately, we compare with ordinary Transformer Engine block FP8 without RHT,
 using matched
 original-basis FP32 masters and foreach AdamW. Across three independent
@@ -327,6 +358,9 @@ making the randomized-transform optimizer path cheaper than ordinary TE's
 weight quantization, gradient materialization, and AdamW sequence.
 This is a system-level net-cost comparison, not the operation-matched optimizer
 ablation above.
+
+\utkarsh{TODO: Move the non-operation-matched 1.312x system comparison to the
+appendix or replace it with an optimizer-matched off-the-shelf baseline.}
 
 A shape sweep further shows that model width alone does not determine the
 benefit. For a high-expansion $3584\rightarrow18944$ MLP, speedup grows from
@@ -346,11 +380,14 @@ patch rather than unmodified upstream. The convergence experiment is a small
 controlled regression, not language-model pretraining; model-scale quality and
 time-to-accuracy remain to be established.
 
+\utkarsh{TODO: Add native Blackwell MXFP8/NVFP4 throughput and model-scale
+time-to-quality before submission.}
+
 \section{Conclusion}
 Tensor cores can implement a normalized FWHT at the H100 memory roofline while
 reducing dynamic instructions. In a Llama-shaped MLP, fused RHT--FP8 is
 1.974$\times$ faster than the functionality-matched off-the-shelf composition,
-but remains 5.4\% slower than TE with RHT omitted. In a separate exact
+but adds 5.7\% latency relative to TE with RHT omitted. In a separate exact
 optimizer ablation, fusing inverse RHT into AdamW reduces the complete step by
 1.370$\times$.
 The next question is whether this systems gain translates to model-scale
