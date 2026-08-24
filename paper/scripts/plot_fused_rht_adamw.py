@@ -8,6 +8,7 @@ import csv
 import html
 import json
 import math
+import statistics
 from pathlib import Path
 
 
@@ -112,7 +113,7 @@ def performance_svg(payload: dict) -> str:
     parts.append(f'<text transform="translate(20 {top+plot_h/2}) rotate(-90)" text-anchor="middle" fill="#8e9bb0" font-family="Inter,system-ui,sans-serif" font-size="12">Median latency (ms; lower is better)</text>')
     return frame(
         "Inverse-RHT + AdamW fusion",
-        "4096 tokens · 4096→22016 SwiGLU→4096 · paired randomized timing · H100 NVL",
+        f"4096 tokens · 4096→22016 SwiGLU→4096 · median of {payload.get('repetitions', 1)} processes · H100 NVL",
         "".join(parts),
         height=height,
     )
@@ -121,12 +122,31 @@ def performance_svg(payload: dict) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--convergence", type=Path, required=True)
-    parser.add_argument("--benchmark", type=Path, required=True)
+    parser.add_argument("--benchmark", type=Path, nargs="+", required=True)
     parser.add_argument("--plot-dir", type=Path, default=Path("paper/plots"))
     parser.add_argument("--result-dir", type=Path, default=Path("paper/results"))
     args = parser.parse_args()
     convergence = json.loads(args.convergence.read_text())
-    benchmark = json.loads(args.benchmark.read_text())
+    benchmark_payloads = [json.loads(path.read_text()) for path in args.benchmark]
+    scalar_keys = (
+        "reference_step_ms",
+        "fused_step_ms",
+        "full_step_speedup",
+        "reference_optimizer_tail_ms",
+        "fused_optimizer_tail_ms",
+        "optimizer_tail_speedup",
+    )
+    benchmark = {
+        key: statistics.median(payload[key] for payload in benchmark_payloads)
+        for key in scalar_keys
+    }
+    benchmark["repetitions"] = len(benchmark_payloads)
+    for phase in ("forward", "backward"):
+        if phase in benchmark_payloads[0]:
+            benchmark[phase] = {
+                key: statistics.median(payload[phase][key] for payload in benchmark_payloads)
+                for key in benchmark_payloads[0][phase]
+            }
     args.plot_dir.mkdir(parents=True, exist_ok=True)
     args.result_dir.mkdir(parents=True, exist_ok=True)
 
@@ -165,6 +185,14 @@ def main() -> None:
             benchmark["fused_optimizer_tail_ms"],
             benchmark["optimizer_tail_speedup"],
         ])
+        for phase in ("forward", "backward"):
+            if phase in benchmark:
+                writer.writerow([
+                    f"{phase}_ms",
+                    benchmark[phase]["mapped_rht_ms"],
+                    benchmark[phase]["fused_adamw_rht_ms"],
+                    benchmark[phase]["speedup"],
+                ])
         mapped = convergence["summary"]["dynamic_rht_block_fp8"]
         fused = convergence["summary"]["dynamic_rht_block_fp8_fused_adamw"]
         writer.writerow([

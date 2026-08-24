@@ -49,6 +49,27 @@ def measure_paired(fn_a, fn_b, warmup: int, iterations: int):
     return samples
 
 
+def measure_backward_paired(prepare_a, prepare_b, dy, warmup: int, iterations: int):
+    for _ in range(warmup):
+        prepare_a().backward(dy)
+        prepare_b().backward(dy)
+    torch.cuda.synchronize()
+    samples = [[], []]
+    rng = random.Random(2028)
+    for _ in range(iterations):
+        outputs = [prepare_a(), prepare_b()]
+        order = (0, 1) if rng.random() < 0.5 else (1, 0)
+        for index in order:
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            outputs[index].backward(dy)
+            end.record()
+            end.synchronize()
+            samples[index].append(start.elapsed_time(end))
+    return samples
+
+
 def relative_l2(actual: torch.Tensor, expected: torch.Tensor) -> float:
     actual = actual.detach().float()
     expected = expected.detach().float()
@@ -116,12 +137,42 @@ def main() -> None:
             hidden = swiglu_rht16_te_block_autograd(z)
             return down(hidden)
 
+    def reference_forward():
+        materialize_all(reference_bridges)
+        return mlp(x_reference, reference_fc1, reference_down)
+
+    def fused_forward():
+        materialize_all(fused_bridges)
+        return mlp(x_fused, fused_fc1, fused_down)
+
+    def prepare_reference_backward():
+        x_reference.grad = None
+        clear_all_working_grads(reference_bridges)
+        return reference_forward()
+
+    def prepare_fused_backward():
+        x_fused.grad = None
+        clear_all_working_grads(fused_bridges)
+        return fused_forward()
+
+    # The two phase paths are byte-for-byte identical before optimization.
+    phase_output_relative_l2 = relative_l2(fused_forward(), reference_forward())
+    forward_samples = measure_paired(
+        reference_forward, fused_forward, args.warmup, args.iterations
+    )
+    backward_samples = measure_backward_paired(
+        prepare_reference_backward,
+        prepare_fused_backward,
+        dy,
+        args.warmup,
+        args.iterations,
+    )
+
     def reference_step():
         x_reference.grad = None
         reference_optimizer.zero_grad(set_to_none=True)
         clear_all_working_grads(reference_bridges)
-        materialize_all(reference_bridges)
-        y = mlp(x_reference, reference_fc1, reference_down)
+        y = reference_forward()
         y.backward(dy)
         map_all_grads(reference_bridges)
         reference_optimizer.step()
@@ -130,8 +181,7 @@ def main() -> None:
     def fused_step():
         x_fused.grad = None
         fused_optimizer.zero_grad(set_to_none=True)
-        materialize_all(fused_bridges)
-        y = mlp(x_fused, fused_fc1, fused_down)
+        y = fused_forward()
         y.backward(dy)
         fused_optimizer.step()
         return y
@@ -200,6 +250,10 @@ def main() -> None:
 
     reference_ms = statistics.median(reference_samples)
     fused_ms = statistics.median(fused_samples)
+    reference_forward_ms = statistics.median(forward_samples[0])
+    fused_forward_ms = statistics.median(forward_samples[1])
+    reference_backward_ms = statistics.median(backward_samples[0])
+    fused_backward_ms = statistics.median(backward_samples[1])
     reference_tail_ms = statistics.median(reference_tail)
     fused_tail_ms = statistics.median(fused_tail)
     post_tail_timing_drift = {
@@ -239,6 +293,17 @@ def main() -> None:
             "betas": [0.9, 0.95],
             "weight_decay": 0.01,
         },
+        "phase_output_relative_l2": phase_output_relative_l2,
+        "forward": {
+            "mapped_rht_ms": reference_forward_ms,
+            "fused_adamw_rht_ms": fused_forward_ms,
+            "speedup": reference_forward_ms / fused_forward_ms,
+        },
+        "backward": {
+            "mapped_rht_ms": reference_backward_ms,
+            "fused_adamw_rht_ms": fused_backward_ms,
+            "speedup": reference_backward_ms / fused_backward_ms,
+        },
         "reference_step_ms": reference_ms,
         "fused_step_ms": fused_ms,
         "full_step_speedup": reference_ms / fused_ms,
@@ -249,15 +314,22 @@ def main() -> None:
         "post_full_timing_drift": post_full_timing_drift,
         "post_tail_timing_drift": post_tail_timing_drift,
         "samples_ms": {
+            "mapped_rht_forward": forward_samples[0],
+            "fused_adamw_rht_forward": forward_samples[1],
+            "mapped_rht_backward": backward_samples[0],
+            "fused_adamw_rht_backward": backward_samples[1],
             "reference_step": reference_samples,
             "fused_step": fused_samples,
             "reference_optimizer_tail": reference_tail,
             "fused_optimizer_tail": fused_tail,
         },
         "scope_note": (
-            "Reference maps BF16 working Wgrad through R^T into an FP32 tensor, "
-            "then calls foreach PyTorch AdamW. Fused consumes the same rotated "
-            "Wgrad and updates original-basis FP32 masters/moments directly."
+            "Algorithm-matched comparison: both paths use identical RHT math, "
+            "direct TE 2D block-FP8 weights, forward, backward, FP32 masters, "
+            "and AdamW hyperparameters. Reference maps BF16 working Wgrad "
+            "through R^T into an FP32 tensor, then calls foreach PyTorch AdamW. "
+            "Fused consumes the same rotated Wgrad and updates original-basis "
+            "FP32 masters/moments directly."
         ),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -269,6 +341,9 @@ def main() -> None:
         "reference_optimizer_tail_ms": reference_tail_ms,
         "fused_optimizer_tail_ms": fused_tail_ms,
         "optimizer_tail_speedup": payload["optimizer_tail_speedup"],
+        "phase_output_relative_l2": phase_output_relative_l2,
+        "forward": payload["forward"],
+        "backward": payload["backward"],
         **{f"one_step_{key}": value for key, value in one_step_correctness.items()},
         "all_finite": post_tail_timing_drift["all_finite"],
     }, indent=2))

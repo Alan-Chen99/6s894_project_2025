@@ -140,10 +140,13 @@ We now fuse the inverse H16 transform directly into the original-basis FP32
 AdamW update, eliminating the materialized master-gradient buffer and its
 separate optimizer launches. A strict independently owned two-path check gives
 zero output/loss/working-gradient difference; after one update the FP32 masters
-agree within 4.8e-8 relative L2 and moments within 2.4e-7. At the 4096-token,
-4096-to-22016-to-4096 SwiGLU shape, the fused path takes 7.436 ms versus 10.460
-ms for transpose-map plus foreach PyTorch AdamW (1.407x full-step speedup); the
-optimizer tail alone improves from 4.402 to 1.405 ms (3.132x). In the matched
+agree within 4.8e-8 relative L2 and moments within 2.4e-7. In the exact
+one-to-one pipeline, forward is 1.000x and backward 0.997x because those phases
+are identical. Across three processes at the 4096-token,
+4096-to-22016-to-4096 SwiGLU shape, the fused path takes 8.356 ms versus 11.233
+ms for transpose-map plus foreach PyTorch AdamW (1.370x median full-step
+speedup, range 1.344--1.399x); the optimizer tail alone improves from 4.224 to
+1.338 ms (3.132x). In the matched
 120-step controlled task it improves median step time from 1.221 to 1.029 ms
 (1.186x), while final MSE differs by 1.6% (0.001817 fused versus 0.001847
 mapped). These are single-process H100 NVL results and still require independent
@@ -155,7 +158,7 @@ operations for one full step; its isolated optimizer range drops from 3.903
 ms/58 operations to 1.172 ms/2 operations. The detailed trace summary is in
 `profiles/h100_nvl_fused_rht_adamw_profile_summary.md`.
 
-The final direct baseline uses ordinary TE block-FP8 with the same
+The separate system-level baseline uses ordinary TE block-FP8 with the same
 original-basis FP32 masters and foreach AdamW. Across three independent
 processes at the same model shape, ours is 0.842x in forward, 0.952x in
 backward, and 0.898x for forward+backward: the RHT integration still adds
@@ -166,6 +169,8 @@ ours and 0.0662 for plain TE, so the end-to-end gain does not come with a
 larger error in this numerical check. See
 `plots/h100_te_vs_fused_rht_adamw.svg` and
 `results/h100_nvl_te_vs_fused_rht_adamw_summary.csv`.
+This comparison measures net cost versus omitting RHT; unlike the optimizer
+ablation above, it is intentionally not an operation-for-operation pipeline.
 
 The corrected convergence artifact is
 `results/raw/h100_nvl_node4508_te_rht_convergence_independent_masters_cu129_2026-08-24.json`.

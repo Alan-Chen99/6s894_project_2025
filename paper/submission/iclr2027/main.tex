@@ -260,10 +260,12 @@ We therefore fuse inverse H16, FP32 Adam moments, decoupled weight decay, and
 the original-basis parameter update in one kernel. An independently allocated
 two-path check matches quantized weight bytes, outputs, losses, and working
 gradients exactly; after one update, master and moment relative L2 errors are at
-most $4.8\times10^{-8}$ and $2.4\times10^{-7}$. For a 4096-token
-$4096\rightarrow22016\rightarrow4096$ SwiGLU MLP, fusion reduces the complete
-step from 10.460 to 7.436 ms (1.407$\times$) and the optimizer tail from 4.402
-to 1.405 ms (3.132$\times$) relative to explicit $R^\top$ mapping plus foreach
+most $4.8\times10^{-8}$ and $2.4\times10^{-7}$. In the exact one-to-one
+pipeline, forward is 1.000$\times$ and backward 0.997$\times$. Across three
+processes for a 4096-token $4096\rightarrow22016\rightarrow4096$ SwiGLU MLP,
+fusion reduces the median complete step from 11.233 to 8.356 ms
+(1.370$\times$, range 1.344--1.399$\times$) and the optimizer tail from 4.224
+to 1.338 ms (3.132$\times$) relative to explicit $R^\top$ mapping plus foreach
 PyTorch AdamW. In a matched 120-step optimizer A/B, both paths begin at the same
 loss; fused and mapped AdamW finish at 0.001817 and 0.001847 MSE, while median
 step latency improves from 1.221 to 1.029 ms (1.186$\times$). This remains a
@@ -273,7 +275,8 @@ range falls from 67 GPU operations and 9.525 ms projected GPU interval to 11
 operations and 6.810 ms, while the optimizer-only range falls from 58
 operations/3.903 ms to two operations/1.172 ms (one fused update per weight).
 
-Finally, we compare with ordinary Transformer Engine block FP8 using matched
+Separately, we compare with ordinary Transformer Engine block FP8 without RHT,
+using matched
 original-basis FP32 masters and foreach AdamW. Across three independent
 processes, median speedups are 0.842$\times$ for forward, 0.952$\times$ for
 backward, and 0.898$\times$ for forward plus backward, showing that the RHT
@@ -284,6 +287,8 @@ L2 against an independent BF16 computation is 0.0661 for RHT and 0.0662 for
 plain TE. Thus the current end-to-end Hopper gain comes specifically from
 making the randomized-transform optimizer path cheaper than ordinary TE's
 weight quantization, gradient materialization, and AdamW sequence.
+This is a system-level net-cost comparison, not the operation-matched optimizer
+ablation above.
 
 A shape sweep further shows that model width alone does not determine the
 benefit. For a high-expansion $3584\rightarrow18944$ MLP, speedup grows from
@@ -305,10 +310,12 @@ time-to-accuracy remain to be established.
 
 \section{Conclusion}
 Tensor cores can implement a normalized FWHT at the H100 memory roofline while
-substantially reducing dynamic instructions. In the randomized FP8 training
-pipeline, RHT still costs 18.8\% in forward and 5.1\% in backward relative to
-ordinary TE, but fusing its inverse directly into AdamW removes enough memory
-traffic and launches to make the complete controlled step 1.312$\times$ faster.
+substantially reducing dynamic instructions. In the exact pipeline-matched RHT
+ablation, forward and backward are unchanged while fusing inverse RHT directly
+into AdamW makes the complete step 1.370$\times$ faster. Relative to ordinary
+TE without RHT, the transform costs 18.8\% in forward and 5.1\% in backward,
+but optimizer fusion still makes the complete controlled step 1.312$\times$
+faster.
 The next question is whether this systems gain translates to model-scale
 time-to-quality and survives native MXFP8/NVFP4 execution on Blackwell.
 

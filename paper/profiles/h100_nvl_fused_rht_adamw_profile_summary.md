@@ -23,7 +23,8 @@ update. Both paths use two weight matrices.
 
 The two fused tail operations are one update launch per weight. Nsight
 projected intervals are a single profiled execution and are separate from the
-randomized event-timing medians (1.407x full step and 3.132x optimizer tail).
+three-process randomized event-timing medians (1.370x full step and 3.132x
+optimizer tail).
 
 Capture command:
 

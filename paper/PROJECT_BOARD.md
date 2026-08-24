@@ -121,10 +121,12 @@ The next Hopper optimization fuses inverse H16, FP32 Adam moments, decoupled
 weight decay, and the parameter update in one Triton kernel. A strict paired
 path check uses independently owned masters and matches FP8 row/column bytes,
 outputs, losses, input gradients, and working Wgrads exactly. After one update,
-master relative L2 is below 4.8e-8 and moment relative L2 below 2.4e-7. For a
-4096-token, 4096-to-22016-to-4096 SwiGLU MLP, this reduces the full step from
-10.460 to 7.436 ms (1.407x) and the optimizer tail from 4.402 to 1.405 ms
-(3.132x). A separate 120-step optimizer A/B begins at identical loss and ends
+master relative L2 is below 4.8e-8 and moment relative L2 below 2.4e-7. In the
+exact one-to-one pipeline, forward is 1.000x and backward is 0.997x. Across
+three processes for a 4096-token, 4096-to-22016-to-4096 SwiGLU MLP, fusion
+reduces the median full step from 11.233 to 8.356 ms (1.370x, range
+1.344--1.399x) and the optimizer tail from 4.224 to 1.338 ms (3.132x). A
+separate 120-step optimizer A/B begins at identical loss and ends
 at 0.001847 mapped versus 0.001817 fused, while median step time improves from
 1.221 to 1.029 ms (1.186x). This removes gradient mapping as the dominant
 dynamic-training overhead; the next target is model-scale time-to-quality.
@@ -132,7 +134,8 @@ Nsight attributes the gain to launch/pass elimination: the mapped full-step
 range has 67 GPU operations and a 9.525 ms projected interval versus 11
 operations and 6.810 ms fused. The isolated optimizer range drops from 58
 operations/3.903 ms to two operations/1.172 ms.
-Against the final matched ordinary-TE block-FP8 baseline, three independent
+As a separate system-level comparison against ordinary TE block FP8 without
+RHT, three independent
 processes give median speedups of 0.842x forward, 0.952x backward, 0.898x
 forward+backward, and 1.312x for the complete optimizer-inclusive step. Median
 complete-step latency is 10.295 ms for plain TE and 7.859 ms fused; the paired
@@ -140,6 +143,8 @@ speedup range is 1.310--1.318x. Both methods have the same numerical regime
 against BF16 (0.0662 versus 0.0661 output relative L2). This is the current
 headline end-to-end Hopper result, with the explicit caveat that the transform
 does not accelerate the forward or backward phase in isolation.
+It measures the net cost of enabling RHT and is not the one-to-one optimizer
+ablation reported immediately above.
 The 2026-08-24 convergence files supersede the earlier multi-path run: the
 bridge now clones each FP32 master rather than aliasing a shared contiguous
 initializer, and the validation explicitly checks independent storage.
