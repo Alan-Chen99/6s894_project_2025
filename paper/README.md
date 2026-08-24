@@ -112,13 +112,30 @@ square-4096 with unchanged GEMM and inverse-RHT costs.
 The Llama-shaped MLP test uses combined FC1, TE fused SwiGLU, a down projection,
 and matching input-axis rotations for both weights. The final Hopper hybrid
 keeps TE SwiGLU in forward and fuses inverse RHT with dSwiGLU in backward.
-Across three processes it is 1.054x/1.020x/1.027x faster than separate RHT plus
-TE in forward/backward/full training. FP32 paired outputs and gradients agree
+Across three processes it is 1.054x/1.020x/1.027x faster than our separate
+Triton RHT plus TE in forward/backward/forward-plus-backward. This is an
+internal fusion ablation, not an external-baseline result. FP32 paired outputs and gradients agree
 within 5.7e-7 relative L2; BF16 differs by
 about 0.6%. Paired TE block FP8 has 6.56--6.82% error against BF16, marginally
 below plain block FP8 for output and all three gradients. Those static-weight
 timings remain useful kernel/integration measurements; H100 NVL absolute
 timings stay separate from H100 HBM3.
+
+The functionality-matched external comparison replaces that separate project
+RHT with the unmodified, pinned Tri Dao H16 kernel, retains an explicit stock
+PyTorch BF16 multiply for the diagonal Rademacher signs, and uses unmodified TE
+2.18 block FP8. The upstream and project transforms match bit-for-bit in BF16.
+Across three independent processes at the same 4096-token Llama shape, our
+fused path is 2.308x faster in forward (4.533 to 1.964 ms), 1.769x in backward
+(6.171 to 3.488 ms), and 1.974x for forward plus backward (10.877 to 5.508 ms).
+The respective ranges are 2.306--2.309x, 1.767--1.775x, and 1.969--1.981x.
+CUDA attribution assigns 5.119 ms to four upstream H16 launches and 0.370 ms
+to four sign-multiply launches; TE GEMM time is effectively identical. Against
+TE block FP8 with no RHT, however, the fused path is 0.941x in forward and
+0.946x for forward plus backward. Thus 1.974x is the RHT-enabled external-
+composition claim, not a speedup over omitting RHT. See
+`results/h100_nvl_dao_te_external_rht_summary.csv` and
+`profiles/h100_nvl_dao_te_external_rht_profile_summary.md`.
 
 The dynamic training path now keeps FP32 AdamW masters and moments in the
 original basis, writes transformed weights directly into TE's 128x128 2D

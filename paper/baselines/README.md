@@ -17,8 +17,12 @@ separately.
 - Upstream A100 claim: FP16/BF16 takes 1.0x memcpy through 512, at most 1.2x
   memcpy for 512--8192, 1.3x at 16384, and 1.8x at 32768.
 - Status: pinned, compiled for H100 (`sm_90`), correctness-checked, and
-  benchmarked. Raw results are in
-  `../../results/raw/h100_sm90_dao_comparison_2026-08-23.json`.
+  benchmarked. Raw standalone results are in
+  `../results/raw/h100_sm90_dao_comparison_2026-08-23.json`. The H16 RHT--TE
+  application comparison uses the same unmodified upstream kernel, rebuilt
+  only for the PyTorch 2.8.0 ABI with SM90-only code generation. A separate
+  stock PyTorch multiply supplies the random signs. Its summary is
+  `../results/h100_nvl_dao_te_external_rht_summary.csv`.
 
 This is the implementation referred to as "Tri Dao's" in the project
 discussion. Our measured H100 speedup reaches 2.36x FP16 and 2.15x BF16 at

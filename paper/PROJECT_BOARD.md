@@ -12,6 +12,10 @@ On H100, the kernel reaches roughly 3 TB/s effective bandwidth and is
 competitive with every tested standalone FWHT baseline. The strongest wins are
 at large transform sizes: up to 1.59x over HadaCore, 2.36x over Tri Dao, 2.25x
 over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
+For the RHT-enabled application, the fused path is 1.974x faster than the
+functionality-matched external composition of upstream Tri Dao H16, stock
+PyTorch signs, and stock TE; it remains about 5% slower than TE with RHT
+omitted. These are distinct claims and must be presented with distinct labels.
 
 ## Workstreams
 
@@ -24,7 +28,8 @@ over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
 | Native FP8 | Linear baseline measured | Test model-derived tensors and quantify RHT impact | H100 |
 | MXFP8 | Hardware blocked | Benchmark block-32 E8M0-scaled path | SM100+ Blackwell |
 | NVFP4 | Hardware blocked | Benchmark H16 RHT + block-16 E4M3 scaling + E2M1 output | SM100+ Blackwell |
-| End-to-end training | 1.312x vs matched TE across 3 processes; convergence matched | Scale to language-model time-to-quality | H100/B200 |
+| RHT-enabled TE MLP | 1.974x vs external RHT + TE across 3 processes | Add model-derived shape/batch sweep | H100 |
+| End-to-end training | 1.370x exact optimizer-fusion ablation; controlled convergence matched | Scale to language-model time-to-quality | H100/B200 |
 
 Transformer Engine 2.18.0 is staged under `paper/baselines/te_runtime/` with a
 locally compiled PyTorch CUDA binding. It has passed a BF16 `te.Linear` smoke
@@ -87,10 +92,21 @@ Folding SwiGLU directly into the 128x128 forward writer was slower on SM90
 SwiGLU forward kernel and fuses inverse H16 with dSwiGLU in backward. Nsight
 shows that the fused backward kernel replaces 275.5 us of separate work with
 220.9 us (-19.8%) and removes one launch. Across three independent processes,
-median speedups over separate RHT plus TE are 1.054x forward, 1.020x backward,
-and 1.027x for the complete step; the observed ranges are 1.053--1.059x,
+median speedups over our separate Triton RHT plus TE are 1.054x forward, 1.020x backward,
+and 1.027x for forward plus backward; the observed ranges are 1.053--1.059x,
 1.009--1.021x, and 1.015--1.034x. At the high-expansion 3584-to-18944 shape
 with 8192 tokens, forward/training speedups are 1.073x/1.032x.
+
+The external functionality-matched baseline now uses pinned, unmodified Tri
+Dao H16, a separate stock PyTorch BF16 multiply for the diagonal Rademacher
+signs, and unmodified TE 2.18 block FP8. It is bit-identical to the project RHT
+at the BF16 transform boundary. Across three processes on the same Llama MLP,
+the fused path is 2.308x forward, 1.769x backward, and 1.974x forward plus
+backward; process ranges are 2.306--2.309x, 1.767--1.775x, and 1.969--1.981x.
+Profiling attributes 5.119 ms to four upstream H16 launches and 0.370 ms to
+four separate sign multiplies, while TE GEMMs are unchanged. The fused path is
+still 0.941x/0.946x versus TE with no RHT in forward/forward-plus-backward, so
+the external claim is explicitly conditional on enabling RHT.
 
 The first model-shape sweep shows that gains depend more on FFN expansion and
 token saturation than parameter width alone. A 3584-to-18944 high-expansion

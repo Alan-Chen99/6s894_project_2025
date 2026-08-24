@@ -1,0 +1,117 @@
+{
+  "timestamp_utc": "2026-08-24T06:36:38Z",
+  "gpu": "NVIDIA H100 NVL",
+  "torch_version": "2.8.0+cu129",
+  "transformer_engine_version": "2.18.0",
+  "shape": {
+    "tokens": 4096,
+    "hidden": 4096,
+    "intermediate": 11008
+  },
+  "method": "fused",
+  "separate_impl": "dao",
+  "events": [
+    {
+      "name": "_LinearBackward",
+      "calls": 2,
+      "self_cuda_time_us": 3157.073000000001,
+      "total_cuda_time_us": 3157.073000000001
+    },
+    {
+      "name": "nvjet_qqtst_128x128_128x6_1x2_h_bz_coopA_algo2_Ablk128_Bvec128_TNN",
+      "calls": 4,
+      "self_cuda_time_us": 2678.4780000000005,
+      "total_cuda_time_us": 2678.4780000000005
+    },
+    {
+      "name": "fused_mlp_combined_4096_4096_11008",
+      "calls": 1,
+      "self_cuda_time_us": 2109.099,
+      "total_cuda_time_us": 2109.099
+    },
+    {
+      "name": "nvjet_qqtst_128x128_128x6_1x2_h_bz_coopA_algo2_Avec128_Bvec128_TNT",
+      "calls": 2,
+      "self_cuda_time_us": 1573.0009999999997,
+      "total_cuda_time_us": 1573.0009999999997
+    },
+    {
+      "name": "_Linear",
+      "calls": 2,
+      "self_cuda_time_us": 1504.5859999999998,
+      "total_cuda_time_us": 1504.5859999999998
+    },
+    {
+      "name": "_SwiGLURHT16TEBlockAutograd",
+      "calls": 1,
+      "self_cuda_time_us": 275.61799999999994,
+      "total_cuda_time_us": 275.61799999999994
+    },
+    {
+      "name": "_rht16_te_block_both_kernel",
+      "calls": 2,
+      "self_cuda_time_us": 260.7049999999997,
+      "total_cuda_time_us": 260.7049999999997
+    },
+    {
+      "name": "_SwiGLURHT16TEBlockAutogradBackward",
+      "calls": 1,
+      "self_cuda_time_us": 221.4409999999998,
+      "total_cuda_time_us": 221.4409999999998
+    },
+    {
+      "name": "_rht16_transpose_dswiglu_kernel",
+      "calls": 1,
+      "self_cuda_time_us": 221.4409999999998,
+      "total_cuda_time_us": 221.4409999999998
+    },
+    {
+      "name": "void transformer_engine::(anonymous namespace)::block_scaled_1d_cast_transpose_kernel<true, float, __nv_bfloat16, __nv_fp8_e4m3>(__nv_bfloat16 const*, __nv_fp8_e4m3*, __nv_fp8_e4m3*, float*, float*, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, float, transformer_engine::detail::FP8BlockwiseRowwiseOption, transformer_engine::detail::FP8BlockwiseColumnwiseOption, bool, float const*)",
+      "calls": 2,
+      "self_cuda_time_us": 210.78499999999985,
+      "total_cuda_time_us": 210.78499999999985
+    },
+    {
+      "name": "void transformer_engine::(anonymous namespace)::block_scaled_cast_transpose_kernel<true, float, __nv_bfloat16, __nv_fp8_e4m3>(__nv_bfloat16 const*, __nv_fp8_e4m3*, __nv_fp8_e4m3*, float*, float*, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, float, CUtensorMap_st, bool, float const*)",
+      "calls": 2,
+      "self_cuda_time_us": 194.4340000000002,
+      "total_cuda_time_us": 194.4340000000002
+    },
+    {
+      "name": "void transformer_engine::gated_act_kernel<16, true, float, transformer_engine::Empty, &(float transformer_engine::silu<float, float>(float, transformer_engine::Empty const&)), __nv_bfloat16, __nv_bfloat16>(__nv_bfloat16 const*, __nv_bfloat16*, float const*, float*, float*, unsigned long, unsigned long, transformer_engine::Empty, unsigned long)",
+      "calls": 1,
+      "self_cuda_time_us": 89.69700000000012,
+      "total_cuda_time_us": 89.69700000000012
+    },
+    {
+      "name": "_RHT16TEBlockAutograd",
+      "calls": 1,
+      "self_cuda_time_us": 74.78399999999988,
+      "total_cuda_time_us": 149.56799999999976
+    },
+    {
+      "name": "Activity Buffer Request",
+      "calls": 1,
+      "self_cuda_time_us": 74.78399999999988,
+      "total_cuda_time_us": 74.78399999999988
+    },
+    {
+      "name": "_RHT16TEBlockAutogradBackward",
+      "calls": 1,
+      "self_cuda_time_us": 62.14400000000023,
+      "total_cuda_time_us": 62.14400000000023
+    },
+    {
+      "name": "_rht16_transpose_kernel",
+      "calls": 1,
+      "self_cuda_time_us": 62.14400000000023,
+      "total_cuda_time_us": 62.14400000000023
+    },
+    {
+      "name": "Memset (Device)",
+      "calls": 6,
+      "self_cuda_time_us": 4.96100000000024,
+      "total_cuda_time_us": 4.96100000000024
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "timestamp_utc": "2026-08-24T06:36:34Z",
+  "gpu": "NVIDIA H100 NVL",
+  "torch_version": "2.8.0+cu129",
+  "transformer_engine_version": "2.18.0",
+  "shape": {
+    "tokens": 4096,
+    "hidden": 4096,
+    "intermediate": 11008
+  },
+  "method": "separate",
+  "separate_impl": "dao",
+  "events": [
+    {
+      "name": "separate_mlp_combined_4096_4096_11008",
+      "calls": 1,
+      "self_cuda_time_us": 9140.701000000001,
+      "total_cuda_time_us": 9140.701000000001
+    },
+    {
+      "name": "void fast_hadamard_transform_kernel<fast_hadamard_transform_kernel_traits<2, 4, c10::BFloat16> >(HadamardParamsBase)",
+      "calls": 4,
+      "self_cuda_time_us": 5118.912000000002,
+      "total_cuda_time_us": 5118.912000000002
+    },
+    {
+      "name": "_LinearBackward",
+      "calls": 2,
+      "self_cuda_time_us": 3157.4269999999997,
+      "total_cuda_time_us": 3157.4269999999997
+    },
+    {
+      "name": "nvjet_qqtst_128x128_128x6_1x2_h_bz_coopA_algo2_Ablk128_Bvec128_TNN",
+      "calls": 4,
+      "self_cuda_time_us": 2667.730000000003,
+      "total_cuda_time_us": 2667.730000000003
+    },
+    {
+      "name": "HadamardTransformFn",
+      "calls": 2,
+      "self_cuda_time_us": 2559.536000000002,
+      "total_cuda_time_us": 2559.536000000002
+    },
+    {
+      "name": "HadamardTransformFnBackward",
+      "calls": 2,
+      "self_cuda_time_us": 2559.376,
+      "total_cuda_time_us": 2559.376
+    },
+    {
+      "name": "_Linear",
+      "calls": 2,
+      "self_cuda_time_us": 1578.4430000000048,
+      "total_cuda_time_us": 1578.4430000000048
+    },
+    {
+      "name": "nvjet_qqtst_128x128_128x6_1x2_h_bz_coopA_algo2_Avec128_Bvec128_TNT",
+      "calls": 2,
+      "self_cuda_time_us": 1574.441999999999,
+      "total_cuda_time_us": 1574.441999999999
+    },
+    {
+      "name": "aten::mul",
+      "calls": 4,
+      "self_cuda_time_us": 370.43600000000333,
+      "total_cuda_time_us": 419.20500000000175
+    },
+    {
+      "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<c10::BFloat16, c10::BFloat16, c10::BFloat16, at::native::binary_internal::MulFunctor<float> > >(at::TensorIteratorBase&, at::native::BinaryFunctor<c10::BFloat16, c10::BFloat16, c10::BFloat16, at::native::binary_internal::MulFunctor<float> > const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<c10::BFloat16, c10::BFloat16, c10::BFloat16, at::native::binary_internal::MulFunctor<float> > >(at::TensorIteratorBase&, at::native::BinaryFunctor<c10::BFloat16, c10::BFloat16, c10::BFloat16, at::native::binary_internal::MulFunctor<float> > const&)::{lambda(int)#1})",
+      "calls": 4,
+      "self_cuda_time_us": 370.43600000000333,
+      "total_cuda_time_us": 370.43600000000333
+    },
+    {
+      "name": "void transformer_engine::(anonymous namespace)::block_scaled_1d_cast_transpose_kernel<true, float, __nv_bfloat16, __nv_fp8_e4m3>(__nv_bfloat16 const*, __nv_fp8_e4m3*, __nv_fp8_e4m3*, float*, float*, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, float, transformer_engine::detail::FP8BlockwiseRowwiseOption, transformer_engine::detail::FP8BlockwiseColumnwiseOption, bool, float const*)",
+      "calls": 4,
+      "self_cuda_time_us": 320.1930000000011,
+      "total_cuda_time_us": 320.1930000000011
+    },
+    {
+      "name": "void transformer_engine::(anonymous namespace)::block_scaled_cast_transpose_kernel<true, float, __nv_bfloat16, __nv_fp8_e4m3>(__nv_bfloat16 const*, __nv_fp8_e4m3*, __nv_fp8_e4m3*, float*, float*, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, float, CUtensorMap_st, bool, float const*)",
+      "calls": 2,
+      "self_cuda_time_us": 168.737000000001,
+      "total_cuda_time_us": 168.737000000001
+    },
+    {
+      "name": "_OperationFuserAutogradFunctionBackward",
+      "calls": 1,
+      "self_cuda_time_us": 128.2569999999978,
+      "total_cuda_time_us": 128.2569999999978
+    },
+    {
+      "name": "void transformer_engine::dgated_act_kernel<16, true, float, transformer_engine::Empty, &(float transformer_engine::silu<float, float>(float, transformer_engine::Empty const&)), &(float transformer_engine::dsilu<float, float>(float, transformer_engine::Empty const&)), __nv_bfloat16, __nv_bfloat16>(__nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, float const*, float*, float*, unsigned long, unsigned long, transformer_engine::Empty, unsigned long)",
+      "calls": 1,
+      "self_cuda_time_us": 128.2569999999978,
+      "total_cuda_time_us": 128.2569999999978
+    },
+    {
+      "name": "_OperationFuserAutogradFunction",
+      "calls": 1,
+      "self_cuda_time_us": 89.47300000000178,
+      "total_cuda_time_us": 89.47300000000178
+    },
+    {
+      "name": "void transformer_engine::gated_act_kernel<16, true, float, transformer_engine::Empty, &(float transformer_engine::silu<float, float>(float, transformer_engine::Empty const&)), __nv_bfloat16, __nv_bfloat16>(__nv_bfloat16 const*, __nv_bfloat16*, float const*, float*, float*, unsigned long, unsigned long, transformer_engine::Empty, unsigned long)",
+      "calls": 1,
+      "self_cuda_time_us": 89.47300000000178,
+      "total_cuda_time_us": 89.47300000000178
+    },
+    {
+      "name": "Activity Buffer Request",
+      "calls": 1,
+      "self_cuda_time_us": 48.768999999998414,
+      "total_cuda_time_us": 48.768999999998414
+    },
+    {
+      "name": "Memset (Device)",
+      "calls": 6,
+      "self_cuda_time_us": 4.768000000000029,
+      "total_cuda_time_us": 4.768000000000029
+    }
+  ]
+}

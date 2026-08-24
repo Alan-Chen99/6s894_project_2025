@@ -228,8 +228,8 @@ same transform on the corresponding weight input axis, using
 $(xR)(wR)^\top=xw^\top$. On Hopper, directly folding SwiGLU into the 128-by-128
 bidirectional writer is register-bound, so our final hybrid keeps TE SwiGLU in
 forward and fuses inverse RHT with dSwiGLU in backward. Across three independent
-processes, median speedups over separate RHT plus TE are 1.054$\times$ forward,
-1.020$\times$ backward, and 1.027$\times$ for the complete training step.
+processes, median speedups over our separate Triton RHT plus TE are 1.054$\times$ forward,
+1.020$\times$ backward, and 1.027$\times$ for forward plus backward.
 The respective process ranges are 1.053--1.059$\times$,
 1.009--1.021$\times$, and 1.015--1.034$\times$. FP32 paired outputs and gradients agree within
 $4.5\times10^{-7}$--$5.7\times10^{-7}$ relative L2, while BF16 differs by about
@@ -237,6 +237,21 @@ $4.5\times10^{-7}$--$5.7\times10^{-7}$ relative L2, while BF16 differs by about
 marginally below plain block FP8 for the output and all three gradients. We
 report these as separate H100 NVL architecture results rather than mixing their
 absolute latency with the H100 80GB HBM3 tables.
+
+That first comparison is an internal fusion ablation. For a
+functionality-matched external baseline, we replace the separate transform with
+the unmodified Tri Dao H16 kernel at pinned commit \texttt{e7706faf}, apply the
+fixed Rademacher signs with a separate stock PyTorch BF16 multiply, and retain
+unmodified TE 2.18 block FP8. The external and project RHT outputs match
+bit-for-bit in BF16. Across three independently started processes, our fused
+path is 2.308$\times$ faster in forward, 1.769$\times$ in backward, and
+1.974$\times$ for forward plus backward; the respective ranges are
+2.306--2.309$\times$, 1.767--1.775$\times$, and 1.969--1.981$\times$.
+Profiling attributes 5.119 ms to four upstream H16 launches and 0.370 ms to
+four separate sign multiplies, while TE GEMM time is unchanged. Relative to TE
+block FP8 with RHT omitted, our path is instead 0.941$\times$/0.946$\times$ in
+forward/forward-plus-backward; hence the 1.974$\times$ claim applies only to
+the RHT-enabled external composition.
 
 We then implement optimizer-correct dynamic weights. FP32 AdamW masters and
 moments remain in the original basis; one kernel writes $WR$ directly into

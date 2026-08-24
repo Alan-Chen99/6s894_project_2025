@@ -23,7 +23,11 @@ from rht16_te_block import (  # noqa: E402
     rht16_te_block_autograd,
     swiglu_rht16_te_block_autograd,
 )
-from rht16_triton import rht16, rht16_autograd  # noqa: E402
+from rht16_triton import DEFAULT_SIGN_MASK, rht16, rht16_autograd  # noqa: E402
+
+
+DAO_REPOSITORY = "https://github.com/Dao-AILab/fast-hadamard-transform"
+DAO_COMMIT = "e7706faf8d1c3b9f241e36860640ad1dac644ede"
 
 
 def measure_paired(fn_a, fn_b, warmup: int, iterations: int):
@@ -74,14 +78,44 @@ def main() -> None:
     parser.add_argument("--intermediate", type=int, default=11008)
     parser.add_argument("--fc1-layout", choices=("combined", "split"), default="combined")
     parser.add_argument("--paired-weights", action="store_true")
+    parser.add_argument("--separate-impl", choices=("ours", "dao"), default="ours")
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iterations", type=int, default=30)
     parser.add_argument("--profile-method", choices=("plain", "separate", "fused"))
+    parser.add_argument("--profile-summary-output", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     m, k, n = args.tokens, args.hidden, args.intermediate
     if any(value % 128 for value in (m, k, n)):
         raise ValueError("tokens, hidden, and intermediate must be divisible by 128")
+
+    dao_hadamard_transform = None
+    rht_signs = None
+    if args.separate_impl == "dao":
+        dao_root = Path("paper/baselines/src/dao-fast-hadamard-transform").resolve()
+        sys.path.insert(0, str(dao_root))
+        from fast_hadamard_transform import (  # noqa: E402
+            hadamard_transform as dao_hadamard_transform,
+        )
+
+        rht_signs = torch.tensor(
+            [
+                -1.0 if (DEFAULT_SIGN_MASK >> index) & 1 else 1.0
+                for index in range(16)
+            ],
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+
+    def dao_rht(value: torch.Tensor) -> torch.Tensor:
+        if dao_hadamard_transform is None or rht_signs is None:
+            raise RuntimeError("Dao RHT requested without --separate-impl dao")
+        shape = value.shape
+        signed = value.contiguous().reshape(-1, 16) * rht_signs
+        return dao_hadamard_transform(signed, scale=0.25).reshape(shape)
+
+    separate_rht = dao_rht if args.separate_impl == "dao" else rht16_autograd
+    weight_rht = dao_rht if args.separate_impl == "dao" else rht16
 
     torch.manual_seed(1234)
     x = torch.randn(m, k, device="cuda", dtype=torch.bfloat16, requires_grad=True)
@@ -102,7 +136,7 @@ def main() -> None:
     if args.paired_weights:
         with torch.no_grad():
             for layer in layers:
-                rotated = rht16(layer.weight.reshape(-1, 16)).reshape_as(layer.weight)
+                rotated = weight_rht(layer.weight.reshape(-1, 16)).reshape_as(layer.weight)
                 layer.weight.copy_(rotated)
     block_recipe = recipe.Float8BlockScaling()
 
@@ -132,7 +166,7 @@ def main() -> None:
             return down(qh)
 
     def separate_input(value: torch.Tensor):
-        return rht16_autograd(value)
+        return separate_rht(value)
 
     def fused_input(value: torch.Tensor):
         return rht16_te_block_autograd(value)
@@ -163,6 +197,55 @@ def main() -> None:
         for _ in range(args.warmup):
             train_step(selected, fuse_swiglu_rht=args.profile_method == "fused")
         torch.cuda.synchronize()
+        if args.profile_summary_output is not None:
+            with torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ]
+            ) as profile:
+                with torch.profiler.record_function(
+                    f"{args.profile_method}_mlp_{args.fc1_layout}_{m}_{k}_{n}"
+                ):
+                    train_step(
+                        selected,
+                        fuse_swiglu_rht=args.profile_method == "fused",
+                    )
+                    torch.cuda.synchronize()
+            events = []
+            for event in profile.key_averages():
+                cuda_time = float(event.self_device_time_total)
+                if cuda_time > 0:
+                    events.append(
+                        {
+                            "name": event.key,
+                            "calls": event.count,
+                            "self_cuda_time_us": cuda_time,
+                            "total_cuda_time_us": float(event.device_time_total),
+                        }
+                    )
+            events.sort(key=lambda event: event["self_cuda_time_us"], reverse=True)
+            profile_payload = {
+                "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "gpu": torch.cuda.get_device_name(0),
+                "torch_version": torch.__version__,
+                "transformer_engine_version": transformer_engine.__version__,
+                "shape": {"tokens": m, "hidden": k, "intermediate": n},
+                "method": args.profile_method,
+                "separate_impl": args.separate_impl,
+                "events": events,
+            }
+            args.profile_summary_output.parent.mkdir(parents=True, exist_ok=True)
+            args.profile_summary_output.write_text(
+                json.dumps(profile_payload, indent=2) + "\n"
+            )
+            for event in events[:20]:
+                print(
+                    f"{event['self_cuda_time_us']:10.3f} us  "
+                    f"{event['calls']:3d}x  {event['name']}"
+                )
+            print(f"wrote {args.profile_summary_output}")
+            return
         torch.cuda.cudart().cudaProfilerStart()
         torch.cuda.nvtx.range_push(
             f"{args.profile_method}_mlp_{args.fc1_layout}_{m}_{k}_{n}"
@@ -218,6 +301,10 @@ def main() -> None:
     }
     check_y = train_step(fused_input, fuse_swiglu_rht=True)
     torch.cuda.synchronize()
+    reference_input = torch.randn(4096, 16, device="cuda", dtype=torch.bfloat16)
+    reference_output = rht16(reference_input)
+    separate_output = weight_rht(reference_input)
+    rht_difference = separate_output.float() - reference_output.float()
     correctness = {
         "output_finite": bool(torch.isfinite(check_y).all()),
         "input_grad_present": x.grad is not None,
@@ -225,6 +312,10 @@ def main() -> None:
         "weight_grads_present": all(layer.weight.grad is not None for layer in layers),
         "weight_grads_finite": all(
             bool(torch.isfinite(layer.weight.grad).all()) for layer in layers
+        ),
+        "separate_rht_vs_project_max_abs": float(rht_difference.abs().max()),
+        "separate_rht_vs_project_relative_l2": float(
+            rht_difference.norm() / reference_output.float().norm()
         ),
     }
     payload = {
@@ -239,6 +330,27 @@ def main() -> None:
         "shape": {"tokens": m, "hidden": k, "intermediate": n},
         "fc1_layout": args.fc1_layout,
         "paired_weights": args.paired_weights,
+        "separate_impl": args.separate_impl,
+        "separate_method": (
+            "Pinned upstream Tri Dao H16 Hadamard kernel + PyTorch BF16 sign multiply + "
+            "unmodified Transformer Engine block-FP8"
+            if args.separate_impl == "dao"
+            else "Project standalone Triton RHT + unmodified Transformer Engine block-FP8"
+        ),
+        "external_hadamard": (
+            {
+                "repository": DAO_REPOSITORY,
+                "commit": DAO_COMMIT,
+                "kernel_changes": "none",
+                "build_note": "Rebuilt for the benchmark PyTorch ABI with SM90-only code generation.",
+                "randomization": (
+                    "A separate PyTorch BF16 multiply applies the fixed diagonal sign matrix "
+                    f"D (mask 0x{DEFAULT_SIGN_MASK:04X}) before upstream H/4."
+                ),
+            }
+            if args.separate_impl == "dao"
+            else None
+        ),
         "warmup": args.warmup,
         "iterations": args.iterations,
         "method_order": "interleaved randomized pairs, seed 1234",
