@@ -236,6 +236,15 @@ optimizer-state equivalence, and convergence remain future work. We report
 these as separate H100 NVL architecture results rather than mixing their
 absolute latency with the H100 80GB HBM3 tables.
 
+A shape sweep further shows that model width alone does not determine the
+benefit. For a high-expansion $3584\rightarrow18944$ MLP, speedup grows from
+1.020$\times$/1.008$\times$ forward/training at 1024 tokens to
+1.073$\times$/1.021$\times$ at 8192 tokens. A $4096\rightarrow14336$ MLP at
+4096 tokens reaches 1.059$\times$/1.021$\times$, whereas a larger
+$8192\rightarrow28672$ case at 2048 tokens reaches only
+1.025$\times$/1.012$\times$. This suggests that high FFN expansion and enough
+tokens to saturate the fused writer are more favorable than hidden width alone.
+
 \section{Limitations}
 The current timing results are single-process measurements and require
 independent repetitions, randomized method order, confidence intervals, and

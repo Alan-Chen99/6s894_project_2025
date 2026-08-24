@@ -24,7 +24,7 @@ over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
 | Native FP8 | Linear baseline measured | Test model-derived tensors and quantify RHT impact | H100 |
 | MXFP8 | Hardware blocked | Benchmark block-32 E8M0-scaled path | SM100+ Blackwell |
 | NVFP4 | Hardware blocked | Benchmark H16 RHT + block-16 E4M3 scaling + E2M1 output | SM100+ Blackwell |
-| End-to-end training | Paired-rotation Llama MLP measured | Add optimizer-state handling, then block convergence | H100/B200 |
+| End-to-end training | Paired-rotation MLP shape sweep measured | Add optimizer-state handling, then block convergence | H100/B200 |
 
 Transformer Engine 2.18.0 is staged under `paper/baselines/te_runtime/` with a
 locally compiled PyTorch CUDA binding. It has passed a BF16 `te.Linear` smoke
@@ -82,6 +82,14 @@ are about 0.60--0.61%. TE block-FP8 paired RHT has 6.56--6.82% relative error
 against BF16, marginally below the corresponding plain block-FP8 errors in all
 four measured quantities. Weights are rotated once outside timing, so dynamic
 weight-rotation cost, optimizer-state equivalence, and convergence remain.
+
+The first model-shape sweep shows that gains depend more on FFN expansion and
+token saturation than parameter width alone. A 3584-to-18944 high-expansion
+shape improves from 1.020x/1.008x forward/training at 1024 tokens to
+1.073x/1.021x at 8192 tokens. A 4096-to-14336 shape reaches 1.059x/1.021x,
+while the larger 8192-to-28672 shape at 2048 tokens reaches only
+1.025x/1.012x because GEMMs dominate. The current Hopper sweet spot is thus a
+high expansion ratio with a sufficiently large token batch.
 
 ## Low-precision decision
 

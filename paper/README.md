@@ -118,6 +118,13 @@ below plain block FP8 for output and all three gradients. The benchmark rotates
 weights once outside timing; dynamic rotation, optimizer-state handling, and
 convergence remain. H100 NVL absolute timings stay separate from H100 HBM3.
 
+A paired-weight shape sweep finds the best forward result at the
+3584-to-18944 high-expansion shape with 8192 tokens: 1.073x forward and 1.021x
+full training versus separate RHT plus TE. At 1024 tokens the same shape falls
+to 1.020x/1.008x, while an 8192-to-28672 case at 2048 tokens reaches
+1.025x/1.012x. High expansion plus enough tokens to saturate the fused writer
+is more favorable than model width by itself.
+
 See `results/h100_sm90_summary.csv` for the derived table and `baselines/` for
 the external-baseline registry.
 
