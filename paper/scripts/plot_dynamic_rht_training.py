@@ -16,11 +16,13 @@ COLORS = {
     "bf16": "#70a5ff",
     "block_fp8": "#ffc46b",
     "dynamic_rht_block_fp8": "#51d6ca",
+    "dynamic_rht_block_fp8_fused_adamw": "#ff7a8a",
 }
 LABELS = {
     "bf16": "BF16",
     "block_fp8": "TE block-FP8",
     "dynamic_rht_block_fp8": "Dynamic RHT + block-FP8",
+    "dynamic_rht_block_fp8_fused_adamw": "Dynamic RHT + fused AdamW",
 }
 
 
@@ -36,7 +38,7 @@ def svg_frame(title: str, subtitle: str, body: str, width=900, height=520) -> st
 def convergence_svg(payload: dict) -> str:
     curves = payload["curves"]
     width, height = 900, 520
-    left, right, top, bottom = 72, 28, 94, 58
+    left, right, top, bottom = 72, 28, 125, 58
     plot_w, plot_h = width - left - right, height - top - bottom
     steps = payload["steps"]
     values = [v for method in curves.values() for v in method["loss"]]
@@ -70,9 +72,10 @@ def convergence_svg(payload: dict) -> str:
         )
         color = COLORS[name]
         parts.append(f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="2.4" stroke-linejoin="round"/>')
-        lx = 520 + index * 120
-        parts.append(f'<line x1="{lx}" y1="43" x2="{lx+22}" y2="43" stroke="{color}" stroke-width="3"/>')
-        parts.append(f'<text x="{lx+28}" y="47" fill="#cbd5e5" font-family="Inter,system-ui,sans-serif" font-size="11">{html.escape(LABELS[name])}</text>')
+        lx = 250 + (index % 2) * 340
+        ly = 82 + (index // 2) * 24
+        parts.append(f'<line x1="{lx}" y1="{ly}" x2="{lx+22}" y2="{ly}" stroke="{color}" stroke-width="3"/>')
+        parts.append(f'<text x="{lx+28}" y="{ly+4}" fill="#cbd5e5" font-family="Inter,system-ui,sans-serif" font-size="11">{html.escape(LABELS[name])}</text>')
     return svg_frame(
         "Dynamic RHT training convergence",
         "Matched teacher–student SwiGLU MLP · H100 NVL · FP32 original-basis AdamW masters",
@@ -127,11 +130,20 @@ def main() -> None:
         bar_svg(
             "Short-run training throughput",
             "Includes FP32 master materialization, backward, gradient mapping, and AdamW",
-            ["BF16", "TE block-FP8", "Dynamic RHT|block-FP8"],
+            [
+                "BF16",
+                "TE block-FP8",
+                "Dynamic RHT|mapped AdamW",
+                "Dynamic RHT|fused AdamW",
+            ],
             [
                 summaries["bf16"]["tokens_per_second"] / 1000,
                 summaries["block_fp8"]["tokens_per_second"] / 1000,
                 summaries["dynamic_rht_block_fp8"]["tokens_per_second"] / 1000,
+                summaries["dynamic_rht_block_fp8_fused_adamw"][
+                    "tokens_per_second"
+                ]
+                / 1000,
             ],
             "Thousands of tokens / second",
         )

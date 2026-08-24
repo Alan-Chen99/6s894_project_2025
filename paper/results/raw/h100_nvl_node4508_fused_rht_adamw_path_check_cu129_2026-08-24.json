@@ -1,0 +1,29 @@
+{
+  "gpu": "NVIDIA H100 NVL",
+  "shape": {
+    "tokens": 256,
+    "hidden": 256,
+    "intermediate": 512
+  },
+  "before_update": {
+    "fc1_master_storage_independent": true,
+    "down_master_storage_independent": true,
+    "fc1_row_bytes_equal": true,
+    "fc1_col_bytes_equal": true,
+    "down_row_bytes_equal": true,
+    "down_col_bytes_equal": true,
+    "output_relative_l2": 0.0,
+    "loss_absolute_difference": 0.0,
+    "input_grad_relative_l2": 0.0,
+    "fc1_working_grad_relative_l2": 0.0,
+    "down_working_grad_relative_l2": 0.0
+  },
+  "after_update": {
+    "fc1_master_relative_l2": 4.763142769093065e-08,
+    "down_master_relative_l2": 4.6751928550747834e-08,
+    "fc1_exp_avg_relative_l2": 2.2361867024756066e-07,
+    "fc1_exp_avg_sq_relative_l2": 2.3086404610239697e-07,
+    "down_exp_avg_relative_l2": 2.2345889760799764e-07,
+    "down_exp_avg_sq_relative_l2": 2.3095751089385885e-07
+  }
+}

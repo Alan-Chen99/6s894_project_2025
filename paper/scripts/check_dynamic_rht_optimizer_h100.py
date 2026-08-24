@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path("paper/rht").resolve()))
-from dynamic_weight import DynamicWeightBridge  # noqa: E402
+from dynamic_weight import DynamicWeightBridge, FusedRHTAdamW  # noqa: E402
 from rht16_triton import reference_matrix  # noqa: E402
 
 
@@ -67,6 +67,44 @@ def main() -> None:
     ).reshape_as(working)
     rematerialize_error = relative_l2(working, expected_after_update)
 
+    # Validate several fused inverse-RHT+AdamW updates against PyTorch AdamW.
+    fused_working = torch.nn.Parameter(torch.empty_like(initial, dtype=torch.bfloat16))
+    fused_bridge = DynamicWeightBridge.from_working_weight(
+        fused_working, rotated=True, initial=initial
+    )
+    # The optimizer only depends on the bridge interface; the production path
+    # supplies a DynamicQuantizedWeightBridge with the same working.grad API.
+    fused_optimizer = FusedRHTAdamW(
+        [fused_bridge], lr=1.0e-3, betas=(0.9, 0.95), weight_decay=0.01
+    )
+    pytorch_working = torch.nn.Parameter(torch.empty_like(initial, dtype=torch.bfloat16))
+    pytorch_bridge = DynamicWeightBridge.from_working_weight(
+        pytorch_working, rotated=True, initial=initial
+    )
+    pytorch_optimizer = torch.optim.AdamW(
+        [pytorch_bridge.master],
+        lr=1.0e-3,
+        betas=(0.9, 0.95),
+        weight_decay=0.01,
+        foreach=False,
+    )
+    for _ in range(5):
+        test_grad = torch.randn_like(fused_working)
+        fused_working.grad = test_grad.clone()
+        pytorch_working.grad = test_grad.clone()
+        pytorch_bridge.map_grad_to_master()
+        pytorch_optimizer.step()
+        pytorch_optimizer.zero_grad(set_to_none=True)
+        fused_optimizer.step()
+    fused_master_error = relative_l2(fused_bridge.master, pytorch_bridge.master)
+    pytorch_state = pytorch_optimizer.state[pytorch_bridge.master]
+    fused_exp_avg_error = relative_l2(
+        fused_optimizer.state[0]["exp_avg"], pytorch_state["exp_avg"]
+    )
+    fused_exp_avg_sq_error = relative_l2(
+        fused_optimizer.state[0]["exp_avg_sq"], pytorch_state["exp_avg_sq"]
+    )
+
     payload = {
         "gpu": torch.cuda.get_device_name(0),
         "shape": [args.rows, args.width],
@@ -77,6 +115,9 @@ def main() -> None:
         "gradient_map_relative_l2": gradient_error,
         "adam_update_relative_l2": update_error,
         "rematerialize_relative_l2": rematerialize_error,
+        "fused_adamw_five_step_master_relative_l2": fused_master_error,
+        "fused_adamw_exp_avg_relative_l2": fused_exp_avg_error,
+        "fused_adamw_exp_avg_sq_relative_l2": fused_exp_avg_sq_error,
         "all_finite": bool(
             torch.isfinite(working).all()
             and torch.isfinite(bridge.master).all()

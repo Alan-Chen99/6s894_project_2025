@@ -245,8 +245,8 @@ Wgrad is mapped through $R^\top$ before the optimizer. Both quantized views and
 all valid scales match the Transformer Engine reference exactly, while the
 mapped gradient has $1.85\times10^{-9}$ relative L2 error and the AdamW update
 is identical to a dense reference. In a controlled 120-step teacher--student
-SwiGLU regression, dynamic RHT block FP8 ends at 0.001562 MSE versus 0.001609
-for ordinary block FP8 and 0.000268 for BF16. This supports no additional
+SwiGLU regression, dynamic RHT block FP8 ends at 0.001847 MSE versus 0.001907
+for ordinary block FP8 and 0.000331 for BF16. This supports no additional
 convergence regression from RHT relative to block FP8, but does not establish
 BF16 parity. At the $4096\rightarrow11008$ shape, directly quantized dynamic
 weights take 7.732 ms versus 7.814 ms for the interleaved BF16-working dynamic
@@ -255,6 +255,23 @@ versus 13 GPU operations because two weight-quantization kernels are removed.
 Both dynamic routes remain approximately 18--19\% slower than paired static
 controls. These measurements exclude AdamW kernels and identify dynamic
 materialization and gradient mapping as the remaining systems cost.
+
+We therefore fuse inverse H16, FP32 Adam moments, decoupled weight decay, and
+the original-basis parameter update in one kernel. An independently allocated
+two-path check matches quantized weight bytes, outputs, losses, and working
+gradients exactly; after one update, master and moment relative L2 errors are at
+most $4.8\times10^{-8}$ and $2.4\times10^{-7}$. For a 4096-token
+$4096\rightarrow22016\rightarrow4096$ SwiGLU MLP, fusion reduces the complete
+step from 10.460 to 7.436 ms (1.407$\times$) and the optimizer tail from 4.402
+to 1.405 ms (3.132$\times$) relative to explicit $R^\top$ mapping plus foreach
+PyTorch AdamW. In a matched 120-step optimizer A/B, both paths begin at the same
+loss; fused and mapped AdamW finish at 0.001817 and 0.001847 MSE, while median
+step latency improves from 1.221 to 1.029 ms (1.186$\times$). This remains a
+controlled regression rather than language-model pretraining.
+Nsight Systems gives consistent architectural evidence: the complete profiled
+range falls from 67 GPU operations and 9.525 ms projected GPU interval to 11
+operations and 6.810 ms, while the optimizer-only range falls from 58
+operations/3.903 ms to two operations/1.172 ms (one fused update per weight).
 
 A shape sweep further shows that model width alone does not determine the
 benefit. For a high-expansion $3584\rightarrow18944$ MLP, speedup grows from
@@ -267,7 +284,7 @@ tokens to saturate the fused writer are more favorable than hidden width alone.
 
 \section{Limitations}
 The primary hybrid MLP has three independent process repetitions, while the
-remaining timing sweeps still require independent repetitions, confidence
+fused-optimizer and remaining timing sweeps still require independent repetitions, confidence
 intervals, and clock/power metadata. The H100 cannot provide native MXFP8 or NVFP4 throughput.
 The patched Arthur baseline must be identified as a local BF16 compatibility
 patch rather than unmodified upstream. The convergence experiment is a small

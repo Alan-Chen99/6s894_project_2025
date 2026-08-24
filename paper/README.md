@@ -126,8 +126,8 @@ block-FP8 storage, and maps BF16 Wgrad through the exact transpose before the
 optimizer. Its weight bytes/scales match TE's reference exactly, the mapped
 gradient differs from dense FP32 by 1.85e-9 relative L2, and the AdamW update
 matches exactly. In a controlled 120-step teacher--student SwiGLU run, dynamic
-RHT block-FP8 ends at 0.001562 MSE versus 0.001609 for ordinary block-FP8 and
-0.000268 for BF16. RHT therefore does not worsen the observed FP8 convergence
+RHT block-FP8 ends at 0.001847 MSE versus 0.001907 for ordinary block-FP8 and
+0.000331 for BF16. RHT therefore does not worsen the observed FP8 convergence
 floor, but neither FP8 path matches BF16 quality on this task. At the
 4096-to-11008 shape, the directly quantized path is 1.011x faster than the
 interleaved BF16-working dynamic control (7.732 versus 7.814 ms). Nsight shows
@@ -135,6 +135,32 @@ interleaved BF16-working dynamic control (7.732 versus 7.814 ms). Nsight shows
 weight handling still costs about 18--19% versus paired static-weight steps,
 making materialization and gradient mapping the next optimization target. See
 `plots/h100_dynamic_rht_convergence.svg` and the companion cost plots.
+
+We now fuse the inverse H16 transform directly into the original-basis FP32
+AdamW update, eliminating the materialized master-gradient buffer and its
+separate optimizer launches. A strict independently owned two-path check gives
+zero output/loss/working-gradient difference; after one update the FP32 masters
+agree within 4.8e-8 relative L2 and moments within 2.4e-7. At the 4096-token,
+4096-to-22016-to-4096 SwiGLU shape, the fused path takes 7.436 ms versus 10.460
+ms for transpose-map plus foreach PyTorch AdamW (1.407x full-step speedup); the
+optimizer tail alone improves from 4.402 to 1.405 ms (3.132x). In the matched
+120-step controlled task it improves median step time from 1.221 to 1.029 ms
+(1.186x), while final MSE differs by 1.6% (0.001817 fused versus 0.001847
+mapped). These are single-process H100 NVL results and still require independent
+repetitions and a language-model time-to-quality experiment. See
+`plots/h100_fused_rht_adamw_performance.svg` and
+`plots/h100_fused_rht_adamw_convergence.svg`.
+Nsight independently projects 9.525 versus 6.810 ms and 67 versus 11 GPU
+operations for one full step; its isolated optimizer range drops from 3.903
+ms/58 operations to 1.172 ms/2 operations. The detailed trace summary is in
+`profiles/h100_nvl_fused_rht_adamw_profile_summary.md`.
+
+The corrected convergence artifact is
+`results/raw/h100_nvl_node4508_te_rht_convergence_independent_masters_cu129_2026-08-24.json`.
+It supersedes the 2026-08-23 multi-path convergence JSONs, whose already-FP32
+contiguous initializer was inadvertently shared between optimizer Parameters.
+The bridge now unconditionally clones master storage, and the strict check
+asserts that the two paths have different storage addresses.
 
 A paired-weight shape sweep finds the best forward result at the
 3584-to-18944 high-expansion shape with 8192 tokens: 1.073x forward and 1.032x

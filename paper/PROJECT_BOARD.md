@@ -1,6 +1,6 @@
 # Tensor-core FWHT research board
 
-Updated: 2026-08-23
+Updated: 2026-08-24
 
 This is the repo-native ICLR 2027 project canvas. Keep raw measurements under
 `paper/results/raw/`, derived tables under `paper/results/`, and mark claims as
@@ -24,7 +24,7 @@ over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
 | Native FP8 | Linear baseline measured | Test model-derived tensors and quantify RHT impact | H100 |
 | MXFP8 | Hardware blocked | Benchmark block-32 E8M0-scaled path | SM100+ Blackwell |
 | NVFP4 | Hardware blocked | Benchmark H16 RHT + block-16 E4M3 scaling + E2M1 output | SM100+ Blackwell |
-| End-to-end training | Dynamic Adam path + controlled convergence captured | Optimize TE primary-weight runtime; scale to language modeling | H100/B200 |
+| End-to-end training | Fused inverse-RHT AdamW measured; controlled convergence matched | Independent repetitions; scale to language modeling | H100/B200 |
 
 Transformer Engine 2.18.0 is staged under `paper/baselines/te_runtime/` with a
 locally compiled PyTorch CUDA binding. It has passed a BF16 `te.Linear` smoke
@@ -106,9 +106,9 @@ the original basis. Each step writes $WR$ directly into TE's native 128x128
 master-gradient buffer. The fused writer matches TE's reference row/column
 bytes and valid scales exactly; the optimizer check has 1.85e-9 gradient
 relative L2 and an exactly matching AdamW update. On a controlled 120-step
-teacher--student SwiGLU task, RHT block-FP8 finishes at 0.001562 MSE versus
-0.001609 for ordinary block-FP8, so RHT adds no observed convergence regression
-relative to the FP8 control. BF16 reaches 0.000268, exposing the FP8 quality
+teacher--student SwiGLU task, RHT block-FP8 finishes at 0.001847 MSE versus
+0.001907 for ordinary block-FP8, so RHT adds no observed convergence regression
+relative to the FP8 control. BF16 reaches 0.000331, exposing the FP8 quality
 floor. At the 4096-to-11008 shape, directly quantized dynamic weights take
 7.732 ms versus 7.814 ms for the interleaved BF16-working dynamic control
 (1.011x faster). Nsight projects 6.106 versus 6.375 ms and 11 versus 13 GPU
@@ -116,6 +116,25 @@ operations because the fused path removes two TE weight-quantization kernels.
 Both dynamic routes remain about 1.18--1.19x slower than their paired static
 controls; these numbers exclude AdamW kernels and identify dynamic
 materialization/gradient mapping as the remaining end-to-end cost.
+
+The next Hopper optimization fuses inverse H16, FP32 Adam moments, decoupled
+weight decay, and the parameter update in one Triton kernel. A strict paired
+path check uses independently owned masters and matches FP8 row/column bytes,
+outputs, losses, input gradients, and working Wgrads exactly. After one update,
+master relative L2 is below 4.8e-8 and moment relative L2 below 2.4e-7. For a
+4096-token, 4096-to-22016-to-4096 SwiGLU MLP, this reduces the full step from
+10.460 to 7.436 ms (1.407x) and the optimizer tail from 4.402 to 1.405 ms
+(3.132x). A separate 120-step optimizer A/B begins at identical loss and ends
+at 0.001847 mapped versus 0.001817 fused, while median step time improves from
+1.221 to 1.029 ms (1.186x). This removes gradient mapping as the dominant
+dynamic-training overhead; the next target is model-scale time-to-quality.
+Nsight attributes the gain to launch/pass elimination: the mapped full-step
+range has 67 GPU operations and a 9.525 ms projected interval versus 11
+operations and 6.810 ms fused. The isolated optimizer range drops from 58
+operations/3.903 ms to two operations/1.172 ms.
+The 2026-08-24 convergence files supersede the earlier multi-path run: the
+bridge now clones each FP32 master rather than aliasing a shared contiguous
+initializer, and the validation explicitly checks independent storage.
 
 ## Low-precision decision
 
@@ -198,6 +217,7 @@ The next pass should categorize opcodes, spills, and major warp-stall reasons.
 - [x] Native FP8 H100 kernel prototype
 - [x] Transformer Engine FP8 linear-layer comparison
 - [x] Original-basis AdamW gradient/state handling
+- [x] Fused inverse-RHT + AdamW update and strict path equivalence
 - [x] Controlled 120-step convergence and throughput plots
 - [ ] Native MXFP8/NVFP4 Blackwell experiment
 - [ ] Language-model end-to-end training throughput and quality

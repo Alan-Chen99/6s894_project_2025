@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path("paper/rht").resolve()))
 from dynamic_weight import (  # noqa: E402
     DynamicQuantizedWeightBridge,
     DynamicWeightBridge,
+    FusedRHTAdamW,
     clear_all_working_grads,
     map_all_grads,
     materialize_all,
@@ -42,6 +43,7 @@ class TrainingPath:
         *,
         fp8: bool,
         rotated: bool,
+        fused_rht_adamw: bool,
         learning_rate: float,
     ) -> None:
         hidden = initial_w1.shape[1]
@@ -49,6 +51,7 @@ class TrainingPath:
         self.name = name
         self.fp8 = fp8
         self.rotated = rotated
+        self.fused_rht_adamw = fused_rht_adamw
         self.block_recipe = recipe.Float8BlockScaling()
         init_context = (
             te.quantized_model_init(enabled=True, recipe=self.block_recipe)
@@ -85,12 +88,22 @@ class TrainingPath:
                     self.down.weight, rotated=False, initial=initial_w2
                 ),
             ]
-        self.optimizer = torch.optim.AdamW(
-            [bridge.master for bridge in self.bridges],
-            lr=learning_rate,
-            betas=(0.9, 0.95),
-            weight_decay=0.01,
-        )
+        if fused_rht_adamw:
+            if not rotated:
+                raise ValueError("fused RHT AdamW requires rotated weights")
+            self.optimizer = FusedRHTAdamW(
+                self.bridges,
+                lr=learning_rate,
+                betas=(0.9, 0.95),
+                weight_decay=0.01,
+            )
+        else:
+            self.optimizer = torch.optim.AdamW(
+                [bridge.master for bridge in self.bridges],
+                lr=learning_rate,
+                betas=(0.9, 0.95),
+                weight_decay=0.01,
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         materialize_all(self.bridges)
@@ -115,7 +128,8 @@ class TrainingPath:
         output = self.forward(x)
         loss = F.mse_loss(output.float(), target.float())
         loss.backward()
-        map_all_grads(self.bridges)
+        if not self.fused_rht_adamw:
+            map_all_grads(self.bridges)
         self.optimizer.step()
         return float(loss.detach())
 
@@ -135,6 +149,7 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=80)
     parser.add_argument("--dataset-batches", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=2.0e-3)
+    parser.add_argument("--optimizer-comparison-only", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     m, k, n = args.tokens, args.hidden, args.intermediate
@@ -152,32 +167,52 @@ def main() -> None:
     ]
     targets = [teacher_output(x, teacher_w1, teacher_w2) for x in inputs]
 
-    paths = [
-        TrainingPath(
-            "bf16",
-            initial_w1,
-            initial_w2,
-            fp8=False,
-            rotated=False,
-            learning_rate=args.learning_rate,
-        ),
-        TrainingPath(
-            "block_fp8",
-            initial_w1,
-            initial_w2,
-            fp8=True,
-            rotated=False,
-            learning_rate=args.learning_rate,
-        ),
+    optimizer_paths = [
         TrainingPath(
             "dynamic_rht_block_fp8",
             initial_w1,
             initial_w2,
             fp8=True,
             rotated=True,
+            fused_rht_adamw=False,
+            learning_rate=args.learning_rate,
+        ),
+        TrainingPath(
+            "dynamic_rht_block_fp8_fused_adamw",
+            initial_w1,
+            initial_w2,
+            fp8=True,
+            rotated=True,
+            fused_rht_adamw=True,
             learning_rate=args.learning_rate,
         ),
     ]
+    if args.optimizer_comparison_only:
+        # Construct only the paired RHT paths. TE initialization owns global
+        # state, so even unused controls can perturb an optimizer A/B test.
+        paths = optimizer_paths
+    else:
+        control_paths = [
+            TrainingPath(
+                "bf16",
+                initial_w1,
+                initial_w2,
+                fp8=False,
+                rotated=False,
+                fused_rht_adamw=False,
+                learning_rate=args.learning_rate,
+            ),
+            TrainingPath(
+                "block_fp8",
+                initial_w1,
+                initial_w2,
+                fp8=True,
+                rotated=False,
+                fused_rht_adamw=False,
+                learning_rate=args.learning_rate,
+            ),
+        ]
+        paths = [*control_paths, *optimizer_paths]
 
     records = {path.name: {"loss": [], "step_ms": []} for path in paths}
     # Warm all TE/Triton paths without changing optimizer state.
@@ -221,12 +256,22 @@ def main() -> None:
             "median_step_ms": median_ms,
             "tokens_per_second": m / (median_ms * 1.0e-3),
         }
-    bf16_final = summary["bf16"]["final_loss"]
-    summary["block_fp8"]["final_loss_ratio_vs_bf16"] = (
-        summary["block_fp8"]["final_loss"] / bf16_final
-    )
-    summary["dynamic_rht_block_fp8"]["final_loss_ratio_vs_bf16"] = (
-        summary["dynamic_rht_block_fp8"]["final_loss"] / bf16_final
+    if "bf16" in summary:
+        bf16_final = summary["bf16"]["final_loss"]
+        for name in (
+            "block_fp8",
+            "dynamic_rht_block_fp8",
+            "dynamic_rht_block_fp8_fused_adamw",
+        ):
+            summary[name]["final_loss_ratio_vs_bf16"] = (
+                summary[name]["final_loss"] / bf16_final
+            )
+    mapped_final = summary["dynamic_rht_block_fp8"]["final_loss"]
+    summary["dynamic_rht_block_fp8_fused_adamw"][
+        "final_loss_ratio_vs_mapped_adamw"
+    ] = (
+        summary["dynamic_rht_block_fp8_fused_adamw"]["final_loss"]
+        / mapped_final
     )
 
     payload = {
@@ -239,6 +284,7 @@ def main() -> None:
         "shape": {"tokens": m, "hidden": k, "intermediate": n},
         "steps": args.steps,
         "dataset_batches": args.dataset_batches,
+        "optimizer_comparison_only": args.optimizer_comparison_only,
         "optimizer": {
             "name": "AdamW",
             "learning_rate": args.learning_rate,
@@ -253,7 +299,8 @@ def main() -> None:
         "scope_note": (
             "Short controlled convergence test, not language-model pretraining. "
             "All paths use FP32 original-basis masters; dynamic RHT fuses WR with "
-            "1D block-FP8 weight storage and maps Wgrad through R^T before AdamW."
+            "2D block-FP8 weight storage. The fused optimizer consumes rotated "
+            "Wgrad directly; its control maps Wgrad through R^T before AdamW."
         ),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
