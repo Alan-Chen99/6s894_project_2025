@@ -155,6 +155,18 @@ operations for one full step; its isolated optimizer range drops from 3.903
 ms/58 operations to 1.172 ms/2 operations. The detailed trace summary is in
 `profiles/h100_nvl_fused_rht_adamw_profile_summary.md`.
 
+The final direct baseline uses ordinary TE block-FP8 with the same
+original-basis FP32 masters and foreach AdamW. Across three independent
+processes at the same model shape, ours is 0.842x in forward, 0.952x in
+backward, and 0.898x for forward+backward: the RHT integration still adds
+compute before the optimizer. Once AdamW is included, the complete step is
+1.312x faster (range 1.310--1.318x), with median latency 7.859 versus 10.295
+ms. Output relative L2 against an independent BF16 computation is 0.0661 for
+ours and 0.0662 for plain TE, so the end-to-end gain does not come with a
+larger error in this numerical check. See
+`plots/h100_te_vs_fused_rht_adamw.svg` and
+`results/h100_nvl_te_vs_fused_rht_adamw_summary.csv`.
+
 The corrected convergence artifact is
 `results/raw/h100_nvl_node4508_te_rht_convergence_independent_masters_cu129_2026-08-24.json`.
 It supersedes the 2026-08-23 multi-path convergence JSONs, whose already-FP32

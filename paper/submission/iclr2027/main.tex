@@ -273,6 +273,18 @@ range falls from 67 GPU operations and 9.525 ms projected GPU interval to 11
 operations and 6.810 ms, while the optimizer-only range falls from 58
 operations/3.903 ms to two operations/1.172 ms (one fused update per weight).
 
+Finally, we compare with ordinary Transformer Engine block FP8 using matched
+original-basis FP32 masters and foreach AdamW. Across three independent
+processes, median speedups are 0.842$\times$ for forward, 0.952$\times$ for
+backward, and 0.898$\times$ for forward plus backward, showing that the RHT
+itself remains overhead relative to an unrotated TE layer. The optimizer gain
+reverses the complete result: the full step takes 7.859 ms versus 10.295 ms,
+or 1.312$\times$ speedup (process range 1.310--1.318$\times$). Output relative
+L2 against an independent BF16 computation is 0.0661 for RHT and 0.0662 for
+plain TE. Thus the current end-to-end Hopper gain comes specifically from
+making the randomized-transform optimizer path cheaper than ordinary TE's
+weight quantization, gradient materialization, and AdamW sequence.
+
 A shape sweep further shows that model width alone does not determine the
 benefit. For a high-expansion $3584\rightarrow18944$ MLP, speedup grows from
 1.020$\times$/1.008$\times$ forward/training at 1024 tokens to
@@ -283,8 +295,8 @@ $8192\rightarrow28672$ case at 2048 tokens reaches only
 tokens to saturate the fused writer are more favorable than hidden width alone.
 
 \section{Limitations}
-The primary hybrid MLP has three independent process repetitions, while the
-fused-optimizer and remaining timing sweeps still require independent repetitions, confidence
+The primary hybrid MLP and final direct-TE comparison have three independent
+process repetitions, while remaining timing sweeps still require confidence
 intervals, and clock/power metadata. The H100 cannot provide native MXFP8 or NVFP4 throughput.
 The patched Arthur baseline must be identified as a local BF16 compatibility
 patch rather than unmodified upstream. The convergence experiment is a small
@@ -293,9 +305,12 @@ time-to-accuracy remain to be established.
 
 \section{Conclusion}
 Tensor cores can implement a normalized FWHT at the H100 memory roofline while
-substantially reducing dynamic instructions. The next question is whether this
-efficiency survives integration into the randomized rotation and quantization
-pipeline that motivates the transform in low-precision training.
+substantially reducing dynamic instructions. In the randomized FP8 training
+pipeline, RHT still costs 18.8\% in forward and 5.1\% in backward relative to
+ordinary TE, but fusing its inverse directly into AdamW removes enough memory
+traffic and launches to make the complete controlled step 1.312$\times$ faster.
+The next question is whether this systems gain translates to model-scale
+time-to-quality and survives native MXFP8/NVFP4 execution on Blackwell.
 
 \bibliography{references}
 \bibliographystyle{iclr2027_conference}

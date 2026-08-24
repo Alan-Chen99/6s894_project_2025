@@ -24,7 +24,7 @@ over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
 | Native FP8 | Linear baseline measured | Test model-derived tensors and quantify RHT impact | H100 |
 | MXFP8 | Hardware blocked | Benchmark block-32 E8M0-scaled path | SM100+ Blackwell |
 | NVFP4 | Hardware blocked | Benchmark H16 RHT + block-16 E4M3 scaling + E2M1 output | SM100+ Blackwell |
-| End-to-end training | Fused inverse-RHT AdamW measured; controlled convergence matched | Independent repetitions; scale to language modeling | H100/B200 |
+| End-to-end training | 1.312x vs matched TE across 3 processes; convergence matched | Scale to language-model time-to-quality | H100/B200 |
 
 Transformer Engine 2.18.0 is staged under `paper/baselines/te_runtime/` with a
 locally compiled PyTorch CUDA binding. It has passed a BF16 `te.Linear` smoke
@@ -132,6 +132,14 @@ Nsight attributes the gain to launch/pass elimination: the mapped full-step
 range has 67 GPU operations and a 9.525 ms projected interval versus 11
 operations and 6.810 ms fused. The isolated optimizer range drops from 58
 operations/3.903 ms to two operations/1.172 ms.
+Against the final matched ordinary-TE block-FP8 baseline, three independent
+processes give median speedups of 0.842x forward, 0.952x backward, 0.898x
+forward+backward, and 1.312x for the complete optimizer-inclusive step. Median
+complete-step latency is 10.295 ms for plain TE and 7.859 ms fused; the paired
+speedup range is 1.310--1.318x. Both methods have the same numerical regime
+against BF16 (0.0662 versus 0.0661 output relative L2). This is the current
+headline end-to-end Hopper result, with the explicit caveat that the transform
+does not accelerate the forward or backward phase in isolation.
 The 2026-08-24 convergence files supersede the earlier multi-path run: the
 bridge now clones each FP32 master rather than aliasing a shared contiguous
 initializer, and the validation explicitly checks independent storage.
@@ -219,6 +227,7 @@ The next pass should categorize opcodes, spills, and major warp-stall reasons.
 - [x] Original-basis AdamW gradient/state handling
 - [x] Fused inverse-RHT + AdamW update and strict path equivalence
 - [x] Controlled 120-step convergence and throughput plots
+- [x] Three-process direct TE block-FP8 end-to-end comparison
 - [ ] Native MXFP8/NVFP4 Blackwell experiment
 - [ ] Language-model end-to-end training throughput and quality
 - [ ] A100/H200/Blackwell architecture comparison
