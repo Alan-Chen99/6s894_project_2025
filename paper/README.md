@@ -7,6 +7,8 @@ Fast Walsh-Hadamard Transform paper. It deliberately excludes the separate
 The live research tracker and profiling commands are in `PROJECT_BOARD.md`.
 A durable reconstruction of the project conversation is in
 `CHAT_LOG_2026-08-23.md`.
+Manuscript edits follow `PAPER_WRITING_STYLE.md`; `AGENTS.md` makes that guide
+the default for future work under this directory.
 
 ## Validated H100 result
 

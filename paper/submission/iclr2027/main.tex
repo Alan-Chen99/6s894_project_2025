@@ -26,11 +26,12 @@ and is up to 1.59$\times$, 2.36$\times$, 2.25$\times$, and 1.36$\times$ faster
 than HadaCore, Tri Dao's CUDA implementation, FlagGems Triton, and a patched
 Triton tensor-core baseline, respectively. Nsight Compute shows
 2.02--3.60$\times$ fewer dynamically executed warp instructions than HadaCore
-across representative transform sizes. We additionally develop a path for
-fusing randomized sign rotations with the transform and quantization stages
-used by low-precision training; a preliminary fused H100 RHT--FP8 pipeline is
-approximately 6$\times$ faster than eager separate operations. End-to-end and
-native NVFP4 results remain pending.
+across representative transform sizes. We also fuse a randomized H16 transform
+with Transformer Engine block-FP8 quantization. On a Llama-shaped MLP, the
+fused path is 1.974$\times$ faster for forward plus backward than a
+functionality-matched composition of unmodified Tri Dao H16, stock PyTorch
+signs, and unmodified Transformer Engine, while remaining 5.4\% slower than
+Transformer Engine with the RHT omitted. Native NVFP4 results remain pending.
 \end{abstract}
 
 \section{Introduction}
@@ -49,8 +50,9 @@ Our current contributions are:
         implementations, including correctness and empirical roofline checks.
   \item Dynamic profiling evidence that the transform ordering executes
         2.02--3.60$\times$ fewer warp instructions than HadaCore.
-  \item A tiled H16 RHT prototype and fused H100 RHT--FP8 pipeline motivated by
-        the randomized rotations used for NVFP4 weight-gradient operands.
+  \item A fused H16 RHT--FP8 Transformer Engine adapter that is 1.974$\times$
+        faster than an off-the-shelf RHT-enabled composition on a Llama-shaped
+        MLP, with an explicit no-RHT control.
 \end{itemize}
 
 \section{Background and motivation}
@@ -152,7 +154,7 @@ traffic and launch overhead dominate. At size 32768, FP16 tensor-pipe activity
 increases from 9.61\% to 16.54\%, while the profiled kernel becomes
 1.69$\times$ faster. BF16 shows the same trend.
 
-\section{Randomized Hadamard and low-precision integration}
+\section{Randomized Hadamard integration}
 \label{sec:rht}
 Our target pipeline is
 \begin{equation}
@@ -164,7 +166,11 @@ The random sign operation is an exact sign-bit change for BF16/FP16 and can be
 folded into loading rather than materialized as a separate tensor. The
 normalization is already folded into the transform. The remaining opportunity
 is to combine output storage with amax/scaling and quantization, eliminating
-full-tensor intermediate memory passes.
+full-tensor intermediate memory passes. Section~\ref{sec:rht-results} evaluates
+this design.
+
+\section{RHT--FP8 evaluation}
+\label{sec:rht-results}
 
 Our preliminary H100 prototype processes 67.1M elements. Plain H16 RHT is
 within 2.3\% of a dense H16 matmul reference and matches it exactly at the
@@ -238,20 +244,37 @@ marginally below plain block FP8 for the output and all three gradients. We
 report these as separate H100 NVL architecture results rather than mixing their
 absolute latency with the H100 80GB HBM3 tables.
 
-That first comparison is an internal fusion ablation. For a
-functionality-matched external baseline, we replace the separate transform with
-the unmodified Tri Dao H16 kernel at pinned commit \texttt{e7706faf}, apply the
-fixed Rademacher signs with a separate stock PyTorch BF16 multiply, and retain
-unmodified TE 2.18 block FP8. The external and project RHT outputs match
-bit-for-bit in BF16. Across three independently started processes, our fused
-path is 2.308$\times$ faster in forward, 1.769$\times$ in backward, and
-1.974$\times$ for forward plus backward; the respective ranges are
-2.306--2.309$\times$, 1.767--1.775$\times$, and 1.969--1.981$\times$.
-Profiling attributes 5.119 ms to four upstream H16 launches and 0.370 ms to
-four separate sign multiplies, while TE GEMM time is unchanged. Relative to TE
-block FP8 with RHT omitted, our path is instead 0.941$\times$/0.946$\times$ in
-forward/forward-plus-backward; hence the 1.974$\times$ claim applies only to
-the RHT-enabled external composition.
+That first comparison is an internal fusion ablation. Our
+functionality-matched external baseline instead uses the unmodified Tri Dao H16
+kernel at pinned commit \texttt{e7706faf}, a separate stock PyTorch BF16
+multiply for the fixed Rademacher signs, and unmodified TE 2.18 block FP8. The
+external and project RHT outputs match bit-for-bit in BF16.
+
+\begin{table}[t]
+\caption{Llama-shaped MLP latency on H100 NVL. The external path composes
+unmodified Tri Dao H16, stock PyTorch signs, and unmodified TE block FP8.
+Values are medians across three independently started processes.}
+\label{tab:rht-external}
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+Phase & External RHT + TE (ms) & Fused (ms) & Speedup \\
+\midrule
+Forward & 4.533 & 1.964 & 2.308$\times$ \\
+Backward & 6.171 & 3.488 & 1.769$\times$ \\
+Forward + backward & 10.877 & 5.508 & 1.974$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The forward, backward, and combined process ranges are 2.306--2.309$\times$,
+1.767--1.775$\times$, and 1.969--1.981$\times$. Profiling attributes 5.119 ms
+to four upstream H16 launches and 0.370 ms to four separate sign multiplies;
+TE GEMM time is unchanged. Relative to TE block FP8 with RHT omitted, the fused
+path is 0.941$\times$ in forward and 0.946$\times$ for forward plus backward.
+The 1.974$\times$ result therefore measures an RHT-enabled pipeline, not a
+speedup over omitting RHT.
 
 We then implement optimizer-correct dynamic weights. FP32 AdamW masters and
 moments remain in the original basis; one kernel writes $WR$ directly into
@@ -325,12 +348,11 @@ time-to-accuracy remain to be established.
 
 \section{Conclusion}
 Tensor cores can implement a normalized FWHT at the H100 memory roofline while
-substantially reducing dynamic instructions. In the exact pipeline-matched RHT
-ablation, forward and backward are unchanged while fusing inverse RHT directly
-into AdamW makes the complete step 1.370$\times$ faster. Relative to ordinary
-TE without RHT, the transform costs 18.8\% in forward and 5.1\% in backward,
-but optimizer fusion still makes the complete controlled step 1.312$\times$
-faster.
+reducing dynamic instructions. In a Llama-shaped MLP, fused RHT--FP8 is
+1.974$\times$ faster than the functionality-matched off-the-shelf composition,
+but remains 5.4\% slower than TE with RHT omitted. In a separate exact
+optimizer ablation, fusing inverse RHT into AdamW reduces the complete step by
+1.370$\times$.
 The next question is whether this systems gain translates to model-scale
 time-to-quality and survives native MXFP8/NVFP4 execution on Blackwell.
 
