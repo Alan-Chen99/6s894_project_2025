@@ -56,6 +56,71 @@ def rht16(x: torch.Tensor, sign_mask: int = DEFAULT_SIGN_MASK) -> torch.Tensor:
 
 
 @triton.jit
+def _rht16_transpose_kernel(
+    x_ptr,
+    y_ptr,
+    rows: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    SIGN_MASK: tl.constexpr,
+):
+    row = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+    k = tl.arange(0, 16)
+    n = tl.arange(0, 16)
+    x = tl.load(x_ptr + row[:, None] * 16 + k[None, :], mask=row[:, None] < rows)
+    shared_bits = k[:, None] & n[None, :]
+    parity = (
+        (shared_bits & 1)
+        ^ ((shared_bits >> 1) & 1)
+        ^ ((shared_bits >> 2) & 1)
+        ^ ((shared_bits >> 3) & 1)
+    )
+    # R^T = H S / 4: apply the random sign to each output column.
+    sign_bit = (SIGN_MASK >> n[None, :]) & 1
+    rt = tl.where((parity ^ sign_bit) != 0, -0.25, 0.25).to(x.dtype)
+    y = tl.dot(x, rt, out_dtype=tl.float32).to(x.dtype)
+    tl.store(y_ptr + row[:, None] * 16 + n[None, :], y, mask=row[:, None] < rows)
+
+
+def rht16_transpose(x: torch.Tensor, sign_mask: int = DEFAULT_SIGN_MASK) -> torch.Tensor:
+    """Apply the transpose/inverse of the normalized randomized H16 transform."""
+    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError("rht16_transpose requires a CUDA FP16 or BF16 tensor")
+    if x.shape[-1] != 16 or not x.is_contiguous():
+        raise ValueError("rht16_transpose requires a contiguous tensor with last dimension 16")
+    rows = x.numel() // 16
+    y = torch.empty_like(x)
+    block_m = 16
+    _rht16_transpose_kernel[(triton.cdiv(rows, block_m),)](
+        x,
+        y,
+        rows=rows,
+        BLOCK_M=block_m,
+        SIGN_MASK=sign_mask,
+        num_warps=4,
+    )
+    return y
+
+
+class _RHT16Autograd(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor):
+        ctx.input_shape = x.shape
+        return rht16(x.contiguous().reshape(-1, 16)).reshape_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        grad = rht16_transpose(grad_output.contiguous().reshape(-1, 16))
+        return grad.reshape(ctx.input_shape)
+
+
+def rht16_autograd(x: torch.Tensor) -> torch.Tensor:
+    """Autograd-enabled RHT with the exact transpose operation in backward."""
+    if not x.requires_grad:
+        raise ValueError("rht16_autograd requires input.requires_grad=True")
+    return _RHT16Autograd.apply(x)
+
+
+@triton.jit
 def _rht16_fp8_kernel(
     x_ptr,
     q_ptr,

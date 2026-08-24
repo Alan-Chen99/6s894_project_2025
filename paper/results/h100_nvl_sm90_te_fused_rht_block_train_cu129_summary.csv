@@ -1,0 +1,5 @@
+shape,separate_preprocess_ms,fused_preprocess_ms,separate_train_pipeline_ms,fused_train_pipeline_ms,preprocess_fusion_speedup,train_pipeline_fusion_speedup
+square_4096,0.105664,0.117968,0.816944,0.858704,0.896,0.951
+square_8192,0.212880,0.233264,2.966288,2.991344,0.913,0.992
+llama_up,0.150832,0.162912,2.021872,2.032864,0.926,0.995
+llama_down,0.266864,0.309696,2.152272,2.190576,0.862,0.983

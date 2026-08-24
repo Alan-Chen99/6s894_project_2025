@@ -99,7 +99,15 @@ and its reconstruction MSE is identical to separate RHT plus TE quantization.
 The fused quantizer is 1.27--1.34x faster, producing a 1.02--1.10x full forward
 pipeline speedup over the separate implementation. For square-8192 and the two
 Llama projections, the fused RHT pipeline is only 4.3%, 6.5%, and 2.4% slower
-than TE block-FP8 Linear without any rotation. Backward remains unintegrated.
+than TE block-FP8 Linear without any rotation in the forward-only experiment.
+
+The training adapter now emits TE's independently scaled columnwise view for
+Wgrad and applies the exact transpose RHT to Dgrad. On a separate H100 NVL,
+the complete fused fprop+Dgrad+Wgrad+inverse-RHT pipeline is within 0.5--1.7%
+of separate RHT plus TE quantization at square-8192 and the Llama projections;
+square-4096 is 4.9% slower. The transpose matches the dense reference exactly,
+and both input and weight gradients are finite. Because this run uses an H100
+NVL, its absolute timings are kept separate from the H100 80GB HBM3 results.
 
 See `results/h100_sm90_summary.csv` for the derived table and `baselines/` for
 the external-baseline registry.

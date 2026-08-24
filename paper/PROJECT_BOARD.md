@@ -20,7 +20,7 @@ over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
 | H100 standalone baselines | Results captured | Repeat randomized-order runs and confidence intervals | H100 |
 | Instruction profiling | Results captured | Add opcode/SASS categorization and independent profile repetition | H100 |
 | Random Hadamard transform | Prototype measured | Replace Triton prototype with/integrate into the CUDA path | H100 |
-| H16 RHT + quantization | Direct TE adapter measured | Add backward/training integration and model-derived tensors | H100 initially |
+| H16 RHT + quantization | Forward/backward adapter measured | Test model-derived tensors and optimize columnwise writer | H100 initially |
 | Native FP8 | Linear baseline measured | Test model-derived tensors and quantify RHT impact | H100 |
 | MXFP8 | Hardware blocked | Benchmark block-32 E8M0-scaled path | SM100+ Blackwell |
 | NVFP4 | Hardware blocked | Benchmark H16 RHT + block-16 E4M3 scaling + E2M1 output | SM100+ Blackwell |
@@ -58,7 +58,17 @@ reference exactly and reconstruction MSE is identical for FP16 and BF16. The
 fused quantizer is 1.27--1.34x faster than separate RHT then TE quantization;
 the complete TE Linear pipeline is 1.02--1.10x faster than the separate
 pipeline. At the three larger shapes, fused RHT adds only 2.4--6.5% over a
-plain block-FP8 TE Linear. Backward integration remains pending.
+plain block-FP8 TE Linear in the forward-only experiment.
+
+The backward adapter now also writes TE's independently scaled columnwise FP8
+view for Wgrad and applies the exact transpose transform, $R^T=HS/4$, to Dgrad.
+Dense-reference transpose error is zero for FP16/BF16, and TE produces finite
+input and weight gradients. On an H100 NVL, randomized interleaved measurements
+put the complete fused fprop+Dgrad+Wgrad+inverse-RHT pipeline within 0.5--1.7%
+of the separate implementation for square-8192 and the two Llama projections;
+square-4096 is 4.9% slower. Fused two-view preprocessing is 7--14% slower
+because H16 is recomputed for the independent columnwise scales. These H100
+NVL timings must not be merged with the H100 80GB HBM3 tables.
 
 ## Low-precision decision
 

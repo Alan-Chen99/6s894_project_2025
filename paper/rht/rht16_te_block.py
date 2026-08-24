@@ -6,7 +6,7 @@ import torch
 import triton
 import triton.language as tl
 
-from rht16_triton import DEFAULT_SIGN_MASK
+from rht16_triton import DEFAULT_SIGN_MASK, rht16_transpose
 
 
 @triton.jit
@@ -103,7 +103,70 @@ def rht16_te_block_buffers(
     return q.view(torch.uint8), scale_inv
 
 
-def rht16_te_block_tensor(x: torch.Tensor, quantizer=None):
+@triton.jit
+def _rht16_te_block_columnwise_kernel(
+    x_ptr,
+    q_col_ptr,
+    scale_col_ptr,
+    width: tl.constexpr,
+    rows: tl.constexpr,
+    padded_width: tl.constexpr,
+    SIGN_MASK: tl.constexpr,
+):
+    row_block = tl.program_id(0)
+    group_k = tl.program_id(1)
+    row = row_block * 128 + tl.arange(0, 128)
+    i = tl.arange(0, 16)
+    j = tl.arange(0, 16)
+    x = tl.load(x_ptr + row[:, None] * width + group_k * 16 + i[None, :])
+
+    shared_bits = i[:, None] & j[None, :]
+    parity = (
+        (shared_bits & 1)
+        ^ ((shared_bits >> 1) & 1)
+        ^ ((shared_bits >> 2) & 1)
+        ^ ((shared_bits >> 3) & 1)
+    )
+    sign_bit = (SIGN_MASK >> i[:, None]) & 1
+    h = tl.where((parity ^ sign_bit) != 0, -0.25, 0.25).to(x.dtype)
+    y = tl.dot(x, h, out_dtype=tl.float32)
+    amax = tl.max(tl.abs(y), axis=0)
+    scale_inv = tl.exp2(tl.ceil(tl.log2(tl.maximum(amax / 448.0, 1.0e-12))))
+
+    col = group_k * 16 + j
+    # TE stores columnwise bytes as a materialized [K,M] transpose.
+    tl.store(q_col_ptr + row[:, None] + col[None, :] * rows, y / scale_inv[None, :])
+    tl.store(scale_col_ptr + row_block * padded_width + col, scale_inv)
+
+
+def rht16_te_block_columnwise_buffers(
+    x: torch.Tensor, sign_mask: int = DEFAULT_SIGN_MASK
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return TE columnwise FP8 bytes and block-128 inverse scales."""
+    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError("input must be a CUDA FP16 or BF16 tensor")
+    if x.ndim != 2 or not x.is_contiguous() or x.shape[1] % 128:
+        raise ValueError("input must be contiguous [M,K] with K divisible by 128")
+    rows, width = x.shape
+    if rows % 128:
+        raise ValueError("TE block-scaled GEMM requires M divisible by 128")
+    padded_width = triton.cdiv(width, 4) * 4
+    q_col = torch.empty((width, rows), device=x.device, dtype=torch.float8_e4m3fn)
+    scale_col = torch.empty((rows // 128, padded_width), device=x.device, dtype=torch.float32)
+    _rht16_te_block_columnwise_kernel[(rows // 128, width // 16)](
+        x,
+        q_col,
+        scale_col,
+        width=width,
+        rows=rows,
+        padded_width=padded_width,
+        SIGN_MASK=sign_mask,
+        num_warps=8,
+    )
+    return q_col.view(torch.uint8), scale_col
+
+
+def rht16_te_block_tensor(x: torch.Tensor, quantizer=None, *, columnwise: bool = False):
     """Create a TE Float8BlockwiseQTensor without a requantization kernel."""
     import transformer_engine.pytorch as te
     from transformer_engine.pytorch.tensor.float8_blockwise_tensor import (
@@ -114,19 +177,42 @@ def rht16_te_block_tensor(x: torch.Tensor, quantizer=None):
         quantizer = te.Float8BlockQuantizer(
             te.DType.kFloat8E4M3,
             rowwise=True,
-            columnwise=False,
+            columnwise=columnwise,
             block_scaling_dim=1,
         )
     data, scale_inv = rht16_te_block_buffers(x)
+    columnwise_data = None
+    columnwise_scale_inv = None
+    if columnwise:
+        columnwise_data, columnwise_scale_inv = rht16_te_block_columnwise_buffers(x)
     return Float8BlockwiseQTensor(
         shape=x.shape,
         dtype=x.dtype,
         fp8_dtype=te.DType.kFloat8E4M3,
         rowwise_data=data,
         rowwise_scale_inv=scale_inv,
-        columnwise_data=None,
-        columnwise_scale_inv=None,
+        columnwise_data=columnwise_data,
+        columnwise_scale_inv=columnwise_scale_inv,
         quantizer=quantizer,
         is_2D_scaled=False,
         device=x.device,
     )
+
+
+class _RHT16TEBlockAutograd(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor):
+        ctx.input_shape = x.shape
+        return rht16_te_block_tensor(x, columnwise=True)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        grad = rht16_transpose(grad_output.contiguous().reshape(-1, 16))
+        return grad.reshape(ctx.input_shape)
+
+
+def rht16_te_block_autograd(x: torch.Tensor):
+    """Quantized RHT tensor whose Dgrad is mapped back through R^T."""
+    if not x.requires_grad:
+        raise ValueError("autograd adapter requires input.requires_grad=True")
+    return _RHT16TEBlockAutograd.apply(x)
