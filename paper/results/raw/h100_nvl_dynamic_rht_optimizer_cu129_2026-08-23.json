@@ -1,0 +1,15 @@
+{
+  "gpu": "NVIDIA H100 NVL",
+  "shape": [
+    512,
+    512
+  ],
+  "master_dtype": "torch.float32",
+  "working_dtype": "torch.bfloat16",
+  "identity": "W_work=WR; grad_master=grad_work R^T",
+  "materialize_relative_l2": 0.0,
+  "gradient_map_relative_l2": 1.8543346858024279e-09,
+  "adam_update_relative_l2": 0.0,
+  "rematerialize_relative_l2": 0.0,
+  "all_finite": true
+}

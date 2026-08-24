@@ -153,6 +153,8 @@ def main() -> None:
                     padded_width=width,
                     SIGN_MASK=DEFAULT_SIGN_MASK,
                     SWIGLU=False,
+                    INPUT_FP32=False,
+                    SCALE_2D=False,
                     num_warps=num_warps,
                     num_stages=num_stages,
                 )
@@ -182,6 +184,8 @@ def main() -> None:
                     padded_width=width,
                     SIGN_MASK=DEFAULT_SIGN_MASK,
                     SWIGLU=True,
+                    INPUT_FP32=False,
+                    SCALE_2D=False,
                     num_warps=num_warps,
                     num_stages=num_stages,
                 )

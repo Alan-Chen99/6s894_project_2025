@@ -116,9 +116,25 @@ Across three processes it is 1.054x/1.020x/1.027x faster than separate RHT plus
 TE in forward/backward/full training. FP32 paired outputs and gradients agree
 within 5.7e-7 relative L2; BF16 differs by
 about 0.6%. Paired TE block FP8 has 6.56--6.82% error against BF16, marginally
-below plain block FP8 for output and all three gradients. The benchmark rotates
-weights once outside timing; dynamic rotation, optimizer-state handling, and
-convergence remain. H100 NVL absolute timings stay separate from H100 HBM3.
+below plain block FP8 for output and all three gradients. Those static-weight
+timings remain useful kernel/integration measurements; H100 NVL absolute
+timings stay separate from H100 HBM3.
+
+The dynamic training path now keeps FP32 AdamW masters and moments in the
+original basis, writes transformed weights directly into TE's 128x128 2D
+block-FP8 storage, and maps BF16 Wgrad through the exact transpose before the
+optimizer. Its weight bytes/scales match TE's reference exactly, the mapped
+gradient differs from dense FP32 by 1.85e-9 relative L2, and the AdamW update
+matches exactly. In a controlled 120-step teacher--student SwiGLU run, dynamic
+RHT block-FP8 ends at 0.001562 MSE versus 0.001609 for ordinary block-FP8 and
+0.000268 for BF16. RHT therefore does not worsen the observed FP8 convergence
+floor, but neither FP8 path matches BF16 quality on this task. At the
+4096-to-11008 shape, the directly quantized path is 1.011x faster than the
+interleaved BF16-working dynamic control (7.732 versus 7.814 ms). Nsight shows
+11 versus 13 GPU operations and a 4.2% shorter projected interval. Dynamic
+weight handling still costs about 18--19% versus paired static-weight steps,
+making materialization and gradient mapping the next optimization target. See
+`plots/h100_dynamic_rht_convergence.svg` and the companion cost plots.
 
 A paired-weight shape sweep finds the best forward result at the
 3584-to-18944 high-expansion shape with 8192 tokens: 1.073x forward and 1.032x

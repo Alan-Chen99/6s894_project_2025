@@ -24,7 +24,7 @@ over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
 | Native FP8 | Linear baseline measured | Test model-derived tensors and quantify RHT impact | H100 |
 | MXFP8 | Hardware blocked | Benchmark block-32 E8M0-scaled path | SM100+ Blackwell |
 | NVFP4 | Hardware blocked | Benchmark H16 RHT + block-16 E4M3 scaling + E2M1 output | SM100+ Blackwell |
-| End-to-end training | Hybrid backward fusion repeated | Add optimizer-state handling, then block convergence | H100/B200 |
+| End-to-end training | Dynamic Adam path + controlled convergence captured | Optimize TE primary-weight runtime; scale to language modeling | H100/B200 |
 
 Transformer Engine 2.18.0 is staged under `paper/baselines/te_runtime/` with a
 locally compiled PyTorch CUDA binding. It has passed a BF16 `te.Linear` smoke
@@ -78,9 +78,9 @@ paired with the activation RHT on its input axis. In an independent numerical
 check, FP32 paired outputs and gradients agree within 4.5e-7--5.7e-7 relative
 L2; BF16 differences are about 0.60--0.61%. TE block-FP8 paired RHT has
 6.56--6.82% relative error against BF16, marginally below the corresponding
-plain block-FP8 errors in all four measured quantities. Weights are rotated
-once outside timing, so dynamic weight-rotation cost, optimizer-state
-equivalence, and convergence remain.
+plain block-FP8 errors in all four measured quantities. Those timings rotate
+weights once outside the measured region; the optimizer-correct dynamic
+extension below is reported separately.
 
 Folding SwiGLU directly into the 128x128 forward writer was slower on SM90
 (268 us) because of register pressure. The retained hybrid uses TE's dedicated
@@ -99,6 +99,23 @@ shape improves from 1.020x/1.008x forward/training at 1024 tokens to
 while the larger 8192-to-28672 shape at 2048 tokens reaches only
 1.025x/1.012x because GEMMs dominate. The current Hopper sweet spot is thus a
 high expansion ratio with a sufficiently large token batch.
+
+The dynamic-weight extension keeps FP32 AdamW masters and optimizer moments in
+the original basis. Each step writes $WR$ directly into TE's native 128x128
+2D block-FP8 weight storage, then maps BF16 Wgrad through $R^T$ into the FP32
+master-gradient buffer. The fused writer matches TE's reference row/column
+bytes and valid scales exactly; the optimizer check has 1.85e-9 gradient
+relative L2 and an exactly matching AdamW update. On a controlled 120-step
+teacher--student SwiGLU task, RHT block-FP8 finishes at 0.001562 MSE versus
+0.001609 for ordinary block-FP8, so RHT adds no observed convergence regression
+relative to the FP8 control. BF16 reaches 0.000268, exposing the FP8 quality
+floor. At the 4096-to-11008 shape, directly quantized dynamic weights take
+7.732 ms versus 7.814 ms for the interleaved BF16-working dynamic control
+(1.011x faster). Nsight projects 6.106 versus 6.375 ms and 11 versus 13 GPU
+operations because the fused path removes two TE weight-quantization kernels.
+Both dynamic routes remain about 1.18--1.19x slower than their paired static
+controls; these numbers exclude AdamW kernels and identify dynamic
+materialization/gradient mapping as the remaining end-to-end cost.
 
 ## Low-precision decision
 
@@ -133,7 +150,7 @@ a comparison against Transformer Engine or a native NVFP4 result.
 | Kernel | RHT alone; RHT+amax; RHT+quantize | Correctness and lower total pipeline time |
 | Linear layer | Fprop, Dgrad, Wgrad separately | Net speedup after quantization overhead |
 | Transformer block | Forward/backward step time and memory | Speedup survives non-GEMM operations |
-| Small training run | Loss curve, gradient statistics, tokens/s | No material convergence regression |
+| Small training run | Loss curve, gradient statistics, tokens/s | Captured: no regression versus block-FP8 control |
 | Model scale | Time-to-quality and distributed communication | Reproducible end-to-end gain |
 
 ## Profiling protocol
@@ -180,8 +197,10 @@ The next pass should categorize opcodes, spills, and major warp-stall reasons.
 - [x] RHT correctness and fused-pipeline benchmark
 - [x] Native FP8 H100 kernel prototype
 - [x] Transformer Engine FP8 linear-layer comparison
+- [x] Original-basis AdamW gradient/state handling
+- [x] Controlled 120-step convergence and throughput plots
 - [ ] Native MXFP8/NVFP4 Blackwell experiment
-- [ ] End-to-end training throughput and quality
+- [ ] Language-model end-to-end training throughput and quality
 - [ ] A100/H200/Blackwell architecture comparison
 
 ## Open decisions

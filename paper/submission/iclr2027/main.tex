@@ -234,11 +234,27 @@ The respective process ranges are 1.053--1.059$\times$,
 1.009--1.021$\times$, and 1.015--1.034$\times$. FP32 paired outputs and gradients agree within
 $4.5\times10^{-7}$--$5.7\times10^{-7}$ relative L2, while BF16 differs by about
 0.6\%. Paired TE block FP8 has 6.56--6.82\% relative error against BF16,
-marginally below plain block FP8 for the output and all three gradients. The
-weights are rotated once outside timing, so dynamic rotation cost,
-optimizer-state equivalence, and convergence remain future work. We report
-these as separate H100 NVL architecture results rather than mixing their
+marginally below plain block FP8 for the output and all three gradients. We
+report these as separate H100 NVL architecture results rather than mixing their
 absolute latency with the H100 80GB HBM3 tables.
+
+We then implement optimizer-correct dynamic weights. FP32 AdamW masters and
+moments remain in the original basis; one kernel writes $WR$ directly into
+Transformer Engine's native 128-by-128 2D block-FP8 weight storage, and BF16
+Wgrad is mapped through $R^\top$ before the optimizer. Both quantized views and
+all valid scales match the Transformer Engine reference exactly, while the
+mapped gradient has $1.85\times10^{-9}$ relative L2 error and the AdamW update
+is identical to a dense reference. In a controlled 120-step teacher--student
+SwiGLU regression, dynamic RHT block FP8 ends at 0.001562 MSE versus 0.001609
+for ordinary block FP8 and 0.000268 for BF16. This supports no additional
+convergence regression from RHT relative to block FP8, but does not establish
+BF16 parity. At the $4096\rightarrow11008$ shape, directly quantized dynamic
+weights take 7.732 ms versus 7.814 ms for the interleaved BF16-working dynamic
+control (1.011$\times$ faster). Nsight projects 6.106 versus 6.375 ms with 11
+versus 13 GPU operations because two weight-quantization kernels are removed.
+Both dynamic routes remain approximately 18--19\% slower than paired static
+controls. These measurements exclude AdamW kernels and identify dynamic
+materialization and gradient mapping as the remaining systems cost.
 
 A shape sweep further shows that model width alone does not determine the
 benefit. For a high-expansion $3584\rightarrow18944$ MLP, speedup grows from
@@ -254,7 +270,8 @@ The primary hybrid MLP has three independent process repetitions, while the
 remaining timing sweeps still require independent repetitions, confidence
 intervals, and clock/power metadata. The H100 cannot provide native MXFP8 or NVFP4 throughput.
 The patched Arthur baseline must be identified as a local BF16 compatibility
-patch rather than unmodified upstream. End-to-end training quality and
+patch rather than unmodified upstream. The convergence experiment is a small
+controlled regression, not language-model pretraining; model-scale quality and
 time-to-accuracy remain to be established.
 
 \section{Conclusion}

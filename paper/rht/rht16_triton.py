@@ -16,11 +16,15 @@ def _rht16_kernel(
     rows: tl.constexpr,
     BLOCK_M: tl.constexpr,
     SIGN_MASK: tl.constexpr,
+    COMPUTE_BF16: tl.constexpr,
 ):
     row = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
     k = tl.arange(0, 16)
     n = tl.arange(0, 16)
     x = tl.load(x_ptr + row[:, None] * 16 + k[None, :], mask=row[:, None] < rows)
+    # Dynamic training keeps FP32 master weights but TE consumes BF16 working
+    # weights. Casting here avoids materializing an intermediate BF16 tensor.
+    x = x.to(tl.bfloat16) if COMPUTE_BF16 else x.to(tl.float16)
 
     # R = S H / sqrt(16), so x R applies the sign before the Hadamard.
     shared_bits = k[:, None] & n[None, :]
@@ -32,7 +36,7 @@ def _rht16_kernel(
     )
     sign_bit = (SIGN_MASK >> k[:, None]) & 1
     r = tl.where((parity ^ sign_bit) != 0, -0.25, 0.25).to(x.dtype)
-    y = tl.dot(x, r, out_dtype=tl.float32).to(x.dtype)
+    y = tl.dot(x, r, out_dtype=tl.float32)
     tl.store(y_ptr + row[:, None] * 16 + n[None, :], y, mask=row[:, None] < rows)
 
 
@@ -50,9 +54,42 @@ def rht16(x: torch.Tensor, sign_mask: int = DEFAULT_SIGN_MASK) -> torch.Tensor:
         rows=rows,
         BLOCK_M=block_m,
         SIGN_MASK=sign_mask,
+        COMPUTE_BF16=x.dtype == torch.bfloat16,
         num_warps=4,
     )
     return y
+
+
+def rht16_into(
+    x: torch.Tensor,
+    out: torch.Tensor,
+    sign_mask: int = DEFAULT_SIGN_MASK,
+) -> torch.Tensor:
+    """Apply RHT directly into a preallocated FP16/BF16 destination.
+
+    ``x`` may be FP32, which is useful for materializing a transformed TE
+    working weight from an original-basis FP32 optimizer master.
+    """
+    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise ValueError("rht16_into input must be a CUDA FP16, BF16, or FP32 tensor")
+    if not out.is_cuda or out.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError("rht16_into output must be a CUDA FP16 or BF16 tensor")
+    if x.shape != out.shape or x.shape[-1] != 16:
+        raise ValueError("input/output shapes must match with last dimension 16")
+    if not x.is_contiguous() or not out.is_contiguous():
+        raise ValueError("rht16_into requires contiguous tensors")
+    rows = x.numel() // 16
+    block_m = 16
+    _rht16_kernel[(triton.cdiv(rows, block_m),)](
+        x,
+        out,
+        rows=rows,
+        BLOCK_M=block_m,
+        SIGN_MASK=sign_mask,
+        COMPUTE_BF16=out.dtype == torch.bfloat16,
+        num_warps=4,
+    )
+    return out
 
 
 @triton.jit
@@ -62,11 +99,13 @@ def _rht16_transpose_kernel(
     rows: tl.constexpr,
     BLOCK_M: tl.constexpr,
     SIGN_MASK: tl.constexpr,
+    COMPUTE_BF16: tl.constexpr,
 ):
     row = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
     k = tl.arange(0, 16)
     n = tl.arange(0, 16)
     x = tl.load(x_ptr + row[:, None] * 16 + k[None, :], mask=row[:, None] < rows)
+    x = x.to(tl.bfloat16) if COMPUTE_BF16 else x.to(tl.float16)
     shared_bits = k[:, None] & n[None, :]
     parity = (
         (shared_bits & 1)
@@ -77,7 +116,7 @@ def _rht16_transpose_kernel(
     # R^T = H S / 4: apply the random sign to each output column.
     sign_bit = (SIGN_MASK >> n[None, :]) & 1
     rt = tl.where((parity ^ sign_bit) != 0, -0.25, 0.25).to(x.dtype)
-    y = tl.dot(x, rt, out_dtype=tl.float32).to(x.dtype)
+    y = tl.dot(x, rt, out_dtype=tl.float32)
     tl.store(y_ptr + row[:, None] * 16 + n[None, :], y, mask=row[:, None] < rows)
 
 
@@ -96,9 +135,42 @@ def rht16_transpose(x: torch.Tensor, sign_mask: int = DEFAULT_SIGN_MASK) -> torc
         rows=rows,
         BLOCK_M=block_m,
         SIGN_MASK=sign_mask,
+        COMPUTE_BF16=x.dtype == torch.bfloat16,
         num_warps=4,
     )
     return y
+
+
+def rht16_transpose_into(
+    x: torch.Tensor,
+    out: torch.Tensor,
+    sign_mask: int = DEFAULT_SIGN_MASK,
+) -> torch.Tensor:
+    """Apply inverse RHT directly into a preallocated destination.
+
+    The destination may be FP32 so a BF16 TE working gradient can be mapped
+    straight into the original-basis optimizer gradient buffer.
+    """
+    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError("rht16_transpose_into input must be CUDA FP16 or BF16")
+    if not out.is_cuda or out.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise ValueError("rht16_transpose_into output must be CUDA FP16, BF16, or FP32")
+    if x.shape != out.shape or x.shape[-1] != 16:
+        raise ValueError("input/output shapes must match with last dimension 16")
+    if not x.is_contiguous() or not out.is_contiguous():
+        raise ValueError("rht16_transpose_into requires contiguous tensors")
+    rows = x.numel() // 16
+    block_m = 16
+    _rht16_transpose_kernel[(triton.cdiv(rows, block_m),)](
+        x,
+        out,
+        rows=rows,
+        BLOCK_M=block_m,
+        SIGN_MASK=sign_mask,
+        COMPUTE_BF16=x.dtype == torch.bfloat16,
+        num_warps=4,
+    )
+    return out
 
 
 class _RHT16Autograd(torch.autograd.Function):

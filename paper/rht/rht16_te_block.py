@@ -73,7 +73,6 @@ def _rht16_te_block_kernel(
     y5 = tl.dot(x5, h, out_dtype=tl.float32)
     y6 = tl.dot(x6, h, out_dtype=tl.float32)
     y7 = tl.dot(x7, h, out_dtype=tl.float32)
-
     amax = tl.maximum(tl.max(tl.abs(y0), axis=1), tl.max(tl.abs(y1), axis=1))
     amax = tl.maximum(amax, tl.max(tl.abs(y2), axis=1))
     amax = tl.maximum(amax, tl.max(tl.abs(y3), axis=1))
@@ -208,6 +207,8 @@ def _rht16_te_block_both_kernel(
     padded_width: tl.constexpr,
     SIGN_MASK: tl.constexpr,
     SWIGLU: tl.constexpr,
+    INPUT_FP32: tl.constexpr,
+    SCALE_2D: tl.constexpr,
 ):
     """Write both TE block-scaled views from one 128x128 RHT tile."""
     row_block = tl.program_id(0)
@@ -237,6 +238,15 @@ def _rht16_te_block_both_kernel(
     x5 = tl.load(x_ptr + base + 5 * 16 + i[None, :])
     x6 = tl.load(x_ptr + base + 6 * 16 + i[None, :])
     x7 = tl.load(x_ptr + base + 7 * 16 + i[None, :])
+    if INPUT_FP32:
+        x0 = x0.to(tl.bfloat16)
+        x1 = x1.to(tl.bfloat16)
+        x2 = x2.to(tl.bfloat16)
+        x3 = x3.to(tl.bfloat16)
+        x4 = x4.to(tl.bfloat16)
+        x5 = x5.to(tl.bfloat16)
+        x6 = x6.to(tl.bfloat16)
+        x7 = x7.to(tl.bfloat16)
     if SWIGLU:
         u0 = tl.load(x_ptr + base + width + 0 * 16 + i[None, :])
         u1 = tl.load(x_ptr + base + width + 1 * 16 + i[None, :])
@@ -264,6 +274,19 @@ def _rht16_te_block_both_kernel(
     y6 = tl.dot(x6, h, out_dtype=tl.float32)
     y7 = tl.dot(x7, h, out_dtype=tl.float32)
 
+    # Match the normal FP32-master -> BF16 working-weight boundary before
+    # quantization. Activation inputs are already BF16/FP16 and retain their
+    # FP32 dot accumulator through the fused quantizer.
+    if INPUT_FP32:
+        y0 = y0.to(tl.bfloat16)
+        y1 = y1.to(tl.bfloat16)
+        y2 = y2.to(tl.bfloat16)
+        y3 = y3.to(tl.bfloat16)
+        y4 = y4.to(tl.bfloat16)
+        y5 = y5.to(tl.bfloat16)
+        y6 = y6.to(tl.bfloat16)
+        y7 = y7.to(tl.bfloat16)
+
     row_amax = tl.maximum(tl.max(tl.abs(y0), axis=1), tl.max(tl.abs(y1), axis=1))
     row_amax = tl.maximum(row_amax, tl.max(tl.abs(y2), axis=1))
     row_amax = tl.maximum(row_amax, tl.max(tl.abs(y3), axis=1))
@@ -281,6 +304,19 @@ def _rht16_te_block_both_kernel(
     col_scale5 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y5), axis=0) / 448.0, 1.0e-12))))
     col_scale6 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y6), axis=0) / 448.0, 1.0e-12))))
     col_scale7 = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.max(tl.abs(y7), axis=0) / 448.0, 1.0e-12))))
+    if SCALE_2D:
+        tile_scale = tl.exp2(
+            tl.ceil(tl.log2(tl.maximum(tl.max(row_amax, axis=0) / 448.0, 1.0e-12)))
+        )
+        row_scale = tile_scale
+        col_scale0 = tile_scale
+        col_scale1 = tile_scale
+        col_scale2 = tile_scale
+        col_scale3 = tile_scale
+        col_scale4 = tile_scale
+        col_scale5 = tile_scale
+        col_scale6 = tile_scale
+        col_scale7 = tile_scale
 
     tl.store(q_ptr + base + 0 * 16 + j[None, :], y0 / row_scale[:, None])
     tl.store(q_ptr + base + 1 * 16 + j[None, :], y1 / row_scale[:, None])
@@ -290,7 +326,10 @@ def _rht16_te_block_both_kernel(
     tl.store(q_ptr + base + 5 * 16 + j[None, :], y5 / row_scale[:, None])
     tl.store(q_ptr + base + 6 * 16 + j[None, :], y6 / row_scale[:, None])
     tl.store(q_ptr + base + 7 * 16 + j[None, :], y7 / row_scale[:, None])
-    tl.store(row_scale_ptr + block_k * padded_rows + row, row_scale)
+    if SCALE_2D:
+        tl.store(row_scale_ptr + row_block * padded_width + block_k, tile_scale)
+    else:
+        tl.store(row_scale_ptr + block_k * padded_rows + row, row_scale)
 
     col_base = block_k * 128 + j
     tl.store(q_col_ptr + row[:, None] + (col_base + 0 * 16)[None, :] * rows, y0 / col_scale0[None, :])
@@ -301,23 +340,26 @@ def _rht16_te_block_both_kernel(
     tl.store(q_col_ptr + row[:, None] + (col_base + 5 * 16)[None, :] * rows, y5 / col_scale5[None, :])
     tl.store(q_col_ptr + row[:, None] + (col_base + 6 * 16)[None, :] * rows, y6 / col_scale6[None, :])
     tl.store(q_col_ptr + row[:, None] + (col_base + 7 * 16)[None, :] * rows, y7 / col_scale7[None, :])
-    scale_base = row_block * padded_width + block_k * 128 + j
-    tl.store(col_scale_ptr + scale_base + 0 * 16, col_scale0)
-    tl.store(col_scale_ptr + scale_base + 1 * 16, col_scale1)
-    tl.store(col_scale_ptr + scale_base + 2 * 16, col_scale2)
-    tl.store(col_scale_ptr + scale_base + 3 * 16, col_scale3)
-    tl.store(col_scale_ptr + scale_base + 4 * 16, col_scale4)
-    tl.store(col_scale_ptr + scale_base + 5 * 16, col_scale5)
-    tl.store(col_scale_ptr + scale_base + 6 * 16, col_scale6)
-    tl.store(col_scale_ptr + scale_base + 7 * 16, col_scale7)
+    if SCALE_2D:
+        tl.store(col_scale_ptr + block_k * padded_rows + row_block, tile_scale)
+    else:
+        scale_base = row_block * padded_width + block_k * 128 + j
+        tl.store(col_scale_ptr + scale_base + 0 * 16, col_scale0)
+        tl.store(col_scale_ptr + scale_base + 1 * 16, col_scale1)
+        tl.store(col_scale_ptr + scale_base + 2 * 16, col_scale2)
+        tl.store(col_scale_ptr + scale_base + 3 * 16, col_scale3)
+        tl.store(col_scale_ptr + scale_base + 4 * 16, col_scale4)
+        tl.store(col_scale_ptr + scale_base + 5 * 16, col_scale5)
+        tl.store(col_scale_ptr + scale_base + 6 * 16, col_scale6)
+        tl.store(col_scale_ptr + scale_base + 7 * 16, col_scale7)
 
 
 def rht16_te_block_both_buffers(
     x: torch.Tensor, sign_mask: int = DEFAULT_SIGN_MASK
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return rowwise and columnwise TE buffers from one RHT evaluation."""
-    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError("input must be a CUDA FP16 or BF16 tensor")
+    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise ValueError("input must be a CUDA FP16, BF16, or FP32 tensor")
     if x.ndim != 2 or not x.is_contiguous() or x.shape[1] % 128:
         raise ValueError("input must be contiguous [M,K] with K divisible by 128")
     rows, width = x.shape
@@ -340,9 +382,137 @@ def rht16_te_block_both_buffers(
         padded_width=padded_width,
         SIGN_MASK=sign_mask,
         SWIGLU=False,
+        INPUT_FP32=x.dtype == torch.float32,
+        SCALE_2D=False,
         num_warps=4,
     )
     return q.view(torch.uint8), row_scale, q_col.view(torch.uint8), col_scale
+
+
+def rht16_te_block_both_into(
+    x: torch.Tensor,
+    rowwise_data: torch.Tensor,
+    rowwise_scale_inv: torch.Tensor,
+    columnwise_data: torch.Tensor,
+    columnwise_scale_inv: torch.Tensor,
+    sign_mask: int = DEFAULT_SIGN_MASK,
+) -> None:
+    """Write fused RHT block-FP8 data directly into an existing TE tensor."""
+    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise ValueError("input must be a CUDA FP16, BF16, or FP32 tensor")
+    if x.ndim != 2 or not x.is_contiguous() or x.shape[1] % 128:
+        raise ValueError("input must be contiguous [M,K] with K divisible by 128")
+    rows, width = x.shape
+    if rows % 128:
+        raise ValueError("TE block-scaled GEMM requires M divisible by 128")
+    padded_rows = triton.cdiv(rows, 4) * 4
+    padded_width = triton.cdiv(width, 4) * 4
+    expected = (
+        (rows, width),
+        (width // 128, padded_rows),
+        (width, rows),
+        (rows // 128, padded_width),
+    )
+    actual = (
+        tuple(rowwise_data.shape),
+        tuple(rowwise_scale_inv.shape),
+        tuple(columnwise_data.shape),
+        tuple(columnwise_scale_inv.shape),
+    )
+    if actual != expected:
+        raise ValueError(f"TE buffer shapes {actual} do not match expected {expected}")
+    if any(not tensor.is_contiguous() for tensor in (
+        rowwise_data,
+        rowwise_scale_inv,
+        columnwise_data,
+        columnwise_scale_inv,
+    )):
+        raise ValueError("TE output buffers must be contiguous")
+    row_fp8 = (
+        rowwise_data.view(torch.float8_e4m3fn)
+        if rowwise_data.dtype == torch.uint8
+        else rowwise_data
+    )
+    col_fp8 = (
+        columnwise_data.view(torch.float8_e4m3fn)
+        if columnwise_data.dtype == torch.uint8
+        else columnwise_data
+    )
+    if row_fp8.dtype != torch.float8_e4m3fn or col_fp8.dtype != torch.float8_e4m3fn:
+        raise ValueError("TE data buffers must contain E4M3 bytes")
+    _rht16_te_block_both_kernel[(rows // 128, width // 128)](
+        x,
+        row_fp8,
+        rowwise_scale_inv,
+        col_fp8,
+        columnwise_scale_inv,
+        rows=rows,
+        padded_rows=padded_rows,
+        padded_width=padded_width,
+        SIGN_MASK=sign_mask,
+        SWIGLU=False,
+        INPUT_FP32=x.dtype == torch.float32,
+        SCALE_2D=False,
+        num_warps=4,
+    )
+
+
+def rht16_te_block_2d_into(
+    x: torch.Tensor,
+    rowwise_data: torch.Tensor,
+    rowwise_scale_inv: torch.Tensor,
+    columnwise_data: torch.Tensor,
+    columnwise_scale_inv: torch.Tensor,
+    sign_mask: int = DEFAULT_SIGN_MASK,
+) -> None:
+    """Write RHT weights into TE's native 128x128 2D block-scaled layout."""
+    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise ValueError("input must be a CUDA FP16, BF16, or FP32 tensor")
+    if x.ndim != 2 or not x.is_contiguous() or any(value % 128 for value in x.shape):
+        raise ValueError("input must be contiguous [M,K], both divisible by 128")
+    rows, width = x.shape
+    row_blocks, width_blocks = rows // 128, width // 128
+    padded_row_blocks = triton.cdiv(row_blocks, 4) * 4
+    padded_width_blocks = triton.cdiv(width_blocks, 4) * 4
+    expected = (
+        (rows, width),
+        (row_blocks, padded_width_blocks),
+        (width, rows),
+        (width_blocks, padded_row_blocks),
+    )
+    actual = (
+        tuple(rowwise_data.shape),
+        tuple(rowwise_scale_inv.shape),
+        tuple(columnwise_data.shape),
+        tuple(columnwise_scale_inv.shape),
+    )
+    if actual != expected:
+        raise ValueError(f"2D TE buffer shapes {actual} do not match expected {expected}")
+    row_fp8 = (
+        rowwise_data.view(torch.float8_e4m3fn)
+        if rowwise_data.dtype == torch.uint8
+        else rowwise_data
+    )
+    col_fp8 = (
+        columnwise_data.view(torch.float8_e4m3fn)
+        if columnwise_data.dtype == torch.uint8
+        else columnwise_data
+    )
+    _rht16_te_block_both_kernel[(row_blocks, width_blocks)](
+        x,
+        row_fp8,
+        rowwise_scale_inv,
+        col_fp8,
+        columnwise_scale_inv,
+        rows=rows,
+        padded_rows=padded_row_blocks,
+        padded_width=padded_width_blocks,
+        SIGN_MASK=sign_mask,
+        SWIGLU=False,
+        INPUT_FP32=x.dtype == torch.float32,
+        SCALE_2D=True,
+        num_warps=4,
+    )
 
 
 def swiglu_rht16_te_block_both_buffers(
