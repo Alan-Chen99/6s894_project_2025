@@ -20,7 +20,7 @@ from transformer_engine.pytorch.ops.basic import SwiGLU
 
 sys.path.insert(0, str(Path("paper/rht").resolve()))
 from rht16_te_block import rht16_te_block_autograd  # noqa: E402
-from rht16_triton import rht16_autograd  # noqa: E402
+from rht16_triton import rht16, rht16_autograd  # noqa: E402
 
 
 def measure_paired(fn_a, fn_b, warmup: int, iterations: int):
@@ -49,6 +49,7 @@ def main() -> None:
     parser.add_argument("--hidden", type=int, default=4096)
     parser.add_argument("--intermediate", type=int, default=11008)
     parser.add_argument("--fc1-layout", choices=("combined", "split"), default="combined")
+    parser.add_argument("--paired-weights", action="store_true")
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iterations", type=int, default=30)
     parser.add_argument("--profile-method", choices=("plain", "separate", "fused"))
@@ -74,6 +75,11 @@ def main() -> None:
         first_layers = (gate, up)
     down = te.Linear(n, k, bias=False, params_dtype=torch.bfloat16, device="cuda")
     layers = (*first_layers, down)
+    if args.paired_weights:
+        with torch.no_grad():
+            for layer in layers:
+                rotated = rht16(layer.weight.reshape(-1, 16)).reshape_as(layer.weight)
+                layer.weight.copy_(rotated)
     block_recipe = recipe.Float8BlockScaling()
 
     def clear_grads() -> None:
@@ -188,6 +194,7 @@ def main() -> None:
         "operation": "Llama-style gate/up/down TE MLP with reusable RHT block-FP8 inputs",
         "shape": {"tokens": m, "hidden": k, "intermediate": n},
         "fc1_layout": args.fc1_layout,
+        "paired_weights": args.paired_weights,
         "warmup": args.warmup,
         "iterations": args.iterations,
         "method_order": "interleaved randomized pairs, seed 1234",
@@ -212,8 +219,12 @@ def main() -> None:
             "fused_control_train": fused_control_train,
         },
         "scope_note": (
-            "Performance-only integration benchmark. Both measured methods apply the same "
-            "activation rotations; paired weight rotations and convergence are not yet tested."
+            "The RHT methods use weights rotated on each linear's input axis, so their "
+            "forward dataflow is paired with the activation rotation. Weights are rotated "
+            "once outside timing; optimizer-state equivalence and convergence are not yet tested. "
+            "The no-rotation TE control is throughput-only."
+            if args.paired_weights
+            else "Performance-only integration benchmark without paired weight rotations."
         ),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

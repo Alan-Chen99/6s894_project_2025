@@ -109,12 +109,14 @@ than separate RHT plus TE quantization; forward ranges from 1.01--1.12x and the
 full training step from 0.99--1.04x. Nsight measures 9.6% less GPU interval at
 square-4096 with unchanged GEMM and inverse-RHT costs.
 
-The first Llama-shaped MLP dataflow test uses combined FC1, TE fused SwiGLU,
-and a down projection. Fused RHT/FP8 is 1.061x/1.017x faster than separate RHT
-plus TE in forward/full training, while retaining 94.4%/92.7% of plain TE
-block-FP8 throughput. This does not yet establish model equivalence: paired
-weight rotations and convergence tests remain. H100 NVL absolute timings stay
-separate from the H100 80GB HBM3 results.
+The Llama-shaped MLP test uses combined FC1, TE fused SwiGLU, a down projection,
+and matching input-axis rotations for both weights. Fused RHT/FP8 is
+1.060x/1.014x faster than separate RHT plus TE in forward/full training. FP32
+paired outputs and gradients agree within 5.7e-7 relative L2; BF16 differs by
+about 0.6%. Paired TE block FP8 has 6.56--6.82% error against BF16, marginally
+below plain block FP8 for output and all three gradients. The benchmark rotates
+weights once outside timing; dynamic rotation, optimizer-state handling, and
+convergence remain. H100 NVL absolute timings stay separate from H100 HBM3.
 
 See `results/h100_sm90_summary.csv` for the derived table and `baselines/` for
 the external-baseline registry.

@@ -1,0 +1,35 @@
+{
+  "gpu": "NVIDIA H100 NVL",
+  "dtype": "bfloat16",
+  "shape": {
+    "tokens": 256,
+    "hidden": 256,
+    "intermediate": 512
+  },
+  "identity": "(xR)(wR)^T = xw^T applied at FC1 and FC2 input axes",
+  "output_relative_l2": 0.0060373288579285145,
+  "input_grad_relative_l2": 0.006082861218601465,
+  "fc1_weight_grad_relative_l2": 0.0061258794739842415,
+  "fc2_weight_grad_relative_l2": 0.006031220778822899,
+  "output_max_abs_error": 0.01953125,
+  "float32_identity": {
+    "output_relative_l2": 5.185927420825465e-07,
+    "input_grad_relative_l2": 4.544389469174348e-07,
+    "fc1_weight_grad_relative_l2": 5.696050493497751e-07,
+    "fc2_weight_grad_relative_l2": 5.283449127091444e-07
+  },
+  "te_block_fp8_paired": {
+    "output_relative_l2_vs_bf16": 0.06562856584787369,
+    "input_grad_relative_l2_vs_bf16": 0.06752122938632965,
+    "fc1_weight_grad_relative_l2_vs_bf16": 0.06816096603870392,
+    "fc2_weight_grad_relative_l2_vs_bf16": 0.06590214371681213,
+    "all_finite": true
+  },
+  "te_block_fp8_plain": {
+    "output_relative_l2_vs_bf16": 0.06575334072113037,
+    "input_grad_relative_l2_vs_bf16": 0.06833481043577194,
+    "fc1_weight_grad_relative_l2_vs_bf16": 0.06841542571783066,
+    "fc2_weight_grad_relative_l2_vs_bf16": 0.06606096029281616
+  },
+  "all_finite": true
+}

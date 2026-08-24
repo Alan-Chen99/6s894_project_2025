@@ -223,13 +223,18 @@ RHT costs.
 
 As a first block-level test, we use a Llama-shaped MLP with a combined
 $4096\rightarrow22016$ FC1, Transformer Engine fused SwiGLU, and a
-$11008\rightarrow4096$ down projection. Fused RHT/FP8 is 1.061$\times$ faster
-in forward and 1.017$\times$ faster for the full training step than separate
-RHT plus TE quantization. It retains 94.4\% and 92.7\% of the corresponding
-plain block-FP8 throughput. This is a performance dataflow experiment rather
-than a model-equivalence result; paired weight rotations and convergence remain
-future work. We report these as separate H100 NVL architecture results rather
-than mixing their absolute latency with the H100 80GB HBM3 tables.
+$11008\rightarrow4096$ down projection. We pair every activation RHT with the
+same transform on the corresponding weight input axis, using
+$(xR)(wR)^\top=xw^\top$. Fused RHT/FP8 is 1.060$\times$ faster in forward and
+1.014$\times$ faster for the full training step than separate RHT plus TE
+quantization. FP32 paired outputs and gradients agree within
+$4.5\times10^{-7}$--$5.7\times10^{-7}$ relative L2, while BF16 differs by about
+0.6\%. Paired TE block FP8 has 6.56--6.82\% relative error against BF16,
+marginally below plain block FP8 for the output and all three gradients. The
+weights are rotated once outside timing, so dynamic rotation cost,
+optimizer-state equivalence, and convergence remain future work. We report
+these as separate H100 NVL architecture results rather than mixing their
+absolute latency with the H100 80GB HBM3 tables.
 
 \section{Limitations}
 The current timing results are single-process measurements and require

@@ -24,7 +24,7 @@ over FlagGems, and 1.28x/1.36x over patched arthurfeeney/fwht for FP16/BF16.
 | Native FP8 | Linear baseline measured | Test model-derived tensors and quantify RHT impact | H100 |
 | MXFP8 | Hardware blocked | Benchmark block-32 E8M0-scaled path | SM100+ Blackwell |
 | NVFP4 | Hardware blocked | Benchmark H16 RHT + block-16 E4M3 scaling + E2M1 output | SM100+ Blackwell |
-| End-to-end training | Llama MLP dataflow measured | Add paired weight rotation, then block and convergence tests | H100/B200 |
+| End-to-end training | Paired-rotation Llama MLP measured | Add optimizer-state handling, then block convergence | H100/B200 |
 
 Transformer Engine 2.18.0 is staged under `paper/baselines/te_runtime/` with a
 locally compiled PyTorch CUDA binding. It has passed a BF16 `te.Linear` smoke
@@ -72,13 +72,16 @@ ranges from 0.99x to 1.04x. Nsight shows a 9.6% reduction in the square-4096
 GPU interval, while GEMM and inverse-RHT times are unchanged. These H100 NVL
 timings must not be merged with the H100 80GB HBM3 tables.
 
-A first Llama-shaped MLP dataflow benchmark uses a combined 4096-to-22016 FC1,
-Transformer Engine's fused SwiGLU, and a 11008-to-4096 down projection. Fused
-RHT/FP8 is 1.061x faster in forward and 1.017x faster for the full training step
-than separate RHT followed by TE quantization. Relative to the same plain TE
-block-FP8 MLP without rotations, it retains 94.4% of forward throughput and
-92.7% of training throughput. This is a performance integration result: paired
-weight rotations, semantic equivalence, and convergence remain to be tested.
+A Llama-shaped MLP benchmark uses a combined 4096-to-22016 FC1, Transformer
+Engine's fused SwiGLU, and a 11008-to-4096 down projection. Each weight is
+paired with the activation RHT on its input axis. Fused RHT/FP8 is 1.060x faster
+in forward and 1.014x faster for the full training step than separate RHT
+followed by TE quantization. In an independent numerical check, FP32 paired
+outputs and gradients agree within 4.5e-7--5.7e-7 relative L2; BF16 differences
+are about 0.60--0.61%. TE block-FP8 paired RHT has 6.56--6.82% relative error
+against BF16, marginally below the corresponding plain block-FP8 errors in all
+four measured quantities. Weights are rotated once outside timing, so dynamic
+weight-rotation cost, optimizer-state equivalence, and convergence remain.
 
 ## Low-precision decision
 
